@@ -2,50 +2,129 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import cdsapi
+import xarray as xr
+import os
+import tempfile
 
-# Pagina instellingen
+# 1. Pagina instellingen
 st.set_page_config(
     page_title="ERA5 Klimaat Explorer",
     page_icon="🌍",
     layout="wide"
 )
 
-# Titel
 st.title("🌍 ERA5 Klimaat Explorer")
-st.markdown("Welkom bij je eigen Klimaat Studies App! Dit is de allereerste live cloud-versie.")
+st.markdown("Analyseer live **ECMWF ERA5** heranalysedata via de Copernicus Climate Data Store (CDS).")
 
-# Zijbalk met opties
+# 2. CDS API Client initialiseren via Secrets
+def get_cds_client():
+    url = st.secrets.get("CDS_URL", "https://cds.climate.copernicus.eu/api")
+    key = st.secrets.get("CDS_KEY", None)
+    if not key:
+        st.error("⚠️ Geen CDS_KEY gevonden in Streamlit Secrets! Voeg de sleutel toe via de Instellingen van de app.")
+        st.stop()
+    return cdsapi.Client(url=url, key=key)
+
+# 3. Functie om live ERA5 data op te halen (met caching)
+@st.cache_data(show_spinner="Live ERA5-data ophalen bij Copernicus CDS (dit duurt enkele seconden)...")
+def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
+    c = get_cds_client()
+    jaren = [str(y) for y in range(start_jaar, eind_jaar + 1)]
+    
+    # Tijdelijke map en bestand opzetten op de cloudserver
+    temp_dir = tempfile.gettempdir()
+    output_path = os.path.join(temp_dir, f"era5_{lat}_{lon}_{start_jaar}_{eind_jaar}.nc")
+    
+    # CDS verzoek voor 2m temperatuur (maandgemiddelden)
+    request = {
+        'format': 'netcdf',
+        'product_type': 'monthly_averaged_reanalysis',
+        'variable': '2m_temperature',
+        'year': jaren,
+        'month': [f"{m:02d}" for m in range(1, 13)],
+        'time': '00:00',
+        'area': [lat + 0.25, lon - 0.25, lat - 0.25, lon + 0.25], # Klein blokje rondom locatie
+    }
+    
+    c.retrieve('reanalysis-era5-single-levels-monthly-means', request, output_path)
+    
+    # Data inlezen met xarray
+    ds = xr.open_dataset(output_path)
+    
+    # Selecteer dichtstbijzijnde punt
+    ds_point = ds.sel(latitude=lat, longitude=lon, method='nearest')
+    
+    # Omzetten naar Pandas DataFrame
+    df = ds_point['t2m'].to_dataframe().reset_index()
+    
+    # Kelvin omzetten naar Celsius
+    df['temperatuur_c'] = df['t2m'] - 273.15
+    df['jaar'] = pd.to_datetime(df['time']).dt.year
+    df['maand'] = pd.to_datetime(df['time']).dt.month
+    
+    return df
+
+# 4. Zijbalk instellingen
 st.sidebar.header("⚙️ Instellingen")
 
-st.sidebar.subheader("1. Locatie selectie")
-latitude = st.sidebar.number_input("Breedtegraad (Lat)", value=51.5, step=0.1)
-longitude = st.sidebar.number_input("Lengtegraad (Lon)", value=4.3, step=0.1)
+st.sidebar.subheader("1. Locatie")
+latitude = st.sidebar.number_input("Breedtegraad (Lat)", value=51.5, min_value=-90.0, max_value=90.0, step=0.1)
+longitude = st.sidebar.number_input("Lengtegraad (Lon)", value=4.3, min_value=-180.0, max_value=180.0, step=0.1)
 
-st.sidebar.subheader("2. Parameters")
-variabele = st.sidebar.selectbox(
-    "Kies variabele",
-    ["2m Temperatuur (°C)", "Neerslag (mm/dag)", "Windsnelheid 10m (m/s)"]
-)
+st.sidebar.subheader("2. Periode")
+jaar_bereik = st.sidebar.slider("Jaarbereik", 1950, 2025, (1990, 2024))
 
-jaar_bereik = st.sidebar.slider("Periode", 1950, 2026, (1991, 2025))
+# Knop om data ophalen te starten
+fetch_data = st.sidebar.button("🚀 Haal ERA5 Data Op", type="primary")
 
-# Demo visualisatie
-st.subheader(f"📊 Tijdreeks preview voor {variabele}")
-st.caption(f"Coördinaten: {latitude}°N, {longitude}°E | Periode: {jaar_bereik[0]} - {jaar_bereik[1]}")
+# 5. Hoofdscherm logica
+if fetch_data or "era5_df" in st.session_state:
+    if fetch_data:
+        try:
+            with st.spinner("Verbinding maken met Copernicus CDS..."):
+                st.session_state["era5_df"] = download_era5_point_data(latitude, longitude, jaar_bereik[0], jaar_bereik[1])
+                st.session_state["loc_info"] = f"Lat: {latitude}°N, Lon: {longitude}°E"
+        except Exception as e:
+            st.error(f"Er is een fout opgetreden bij het ophalen van de data: {e}")
+            st.stop()
+            
+    df = st.session_state["era5_df"]
+    
+    st.subheader(f"📊 Live ERA5 2m Temperatuur voor {st.session_state['loc_info']}")
+    
+    # Jaargemiddelden berekenen
+    df_jaar = df.groupby("jaar")["temperatuur_c"].mean().reset_index()
+    klimaat_norm = df_jaar["temperatuur_c"].mean()
+    
+    # Metrics
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Klimaatgemiddelde", f"{klimaat_norm:.2f} °C")
+    col2.metric("Warmste Jaar", f"{df_jaar['temperatuur_c'].max():.2f} °C", delta=f"{df_jaar['temperatuur_c'].max() - klimaat_norm:.2f} °C")
+    col3.metric("Koudste Jaar", f"{df_jaar['temperatuur_c'].min():.2f} °C", delta=f"{df_jaar['temperatuur_c'].min() - klimaat_norm:.2f} °C")
+    
+    # Grafiek
+    fig = px.line(
+        df_jaar, 
+        x="jaar", 
+        y="temperatuur_c", 
+        title=f"Jaarlijkse Gemiddelde Temperatuur ({jaar_bereik[0]}-{jaar_bereik[1]})",
+        markers=True,
+        labels={"temperatuur_c": "Temperatuur (°C)", "jaar": "Jaar"}
+    )
+    
+    fig.add_hline(
+        y=klimaat_norm, 
+        line_dash="dash", 
+        line_color="red", 
+        annotation_text=f"Norm: {klimaat_norm:.2f} °C"
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Tabel
+    with st.expander("📄 Bekijk de ruwe dataset"):
+        st.dataframe(df)
 
-jaren = np.arange(jaar_bereik[0], jaar_bereik[1] + 1)
-trend = (jaren - jaar_bereik[0]) * 0.03
-basis_temp = 10.5 + trend + np.random.normal(0, 0.5, len(jaren))
-
-df = pd.DataFrame({"Jaar": jaren, "Waarde": np.round(basis_temp, 2)})
-
-col1, col2, col3 = st.columns(3)
-col1.metric("Gemiddelde", f"{df['Waarde'].mean():.2f}")
-col2.metric("Maximum", f"{df['Waarde'].max():.2f}")
-col3.metric("Minimum", f"{df['Waarde'].min():.2f}")
-
-fig = px.line(df, x="Jaar", y="Waarde", title=f"Demonstratie verloop van {variabele}", markers=True)
-fig.add_hline(y=df["Waarde"].mean(), line_dash="dash", line_color="red", annotation_text="Gemiddelde")
-st.plotly_chart(fig, use_container_width=True)
-
-st.success("✅ Gefeliciteerd! De app draait live via jouw GitHub repository.")
+else:
+    st.info("👈 Stel de gewenste coördinaten en periode in de zijbalk in en klik op **'🚀 Haal ERA5 Data Op'** om de echte klimaatdata te laden.")
