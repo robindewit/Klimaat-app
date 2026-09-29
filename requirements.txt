@@ -2,11 +2,9 @@ streamlit
 pandas
 numpy
 plotly
-cdsapi
 xarray
+cdsapi
+requests
 netcdf4
 h5netcdf
 scipy
-cfgrib
-python-docx
-geopy
