@@ -6,17 +6,17 @@ import plotly.graph_objects as go
 import tempfile
 import os
 
-# --- PAGE CONFIGURATION (MOET ALTIJD ALSTEERSTE STREAMLIT CALL ZIJN!) ---
+# --- PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="ERA5 Klimaat Dashboard",
-    page_layout="wide",
+    layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- PAS HIERNA VOLGEN OVERIGE STREAMLIT CALLS ---
 st.title("🌍 ERA5 Klimaat Visualisatie Tool")
 st.markdown("""
 Visualiseer klimaat trends op basis van ECMWF ERA5 reanalyse data.
+_Let op: Voor het ophalen van data is een actieve CDS API key nodig in de omgeving of `.cdsapirc` file._
 """)
 
 # --- SIDEBAR CONTROLS ---
