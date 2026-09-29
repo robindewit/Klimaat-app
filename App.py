@@ -1,189 +1,392 @@
-import streamlit as st
+import os
+import tempfile
 import cdsapi
-import xarray as xr
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import tempfile
-import os
+import requests
+import streamlit as st
+import xarray as xr
 
-# --- PAGE CONFIGURATION ---
+# 1. Pagina instellingen
 st.set_page_config(
-    page_title="ERA5 Klimaat Dashboard",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="ERA5 Klimaat Explorer", page_icon="🌍", layout="wide"
 )
 
-st.title("🌍 ERA5 Klimaat Visualisatie Tool")
-st.markdown("""
-Visualiseer klimaat trends op basis van ECMWF ERA5 reanalyse data.
-_Let op: Voor het ophalen van data is een actieve CDS API key nodig in de omgeving of `.cdsapirc` file._
-""")
+st.title("🌍 ERA5 Klimaat Explorer")
+st.markdown(
+    "Analyseer live **ECMWF ERA5** heranalysedata via de Copernicus Climate Data Store (CDS)."
+)
 
-# --- SIDEBAR CONTROLS ---
-st.sidebar.header("Parameters & Locatie")
 
-lat = st.sidebar.number_input("Breedtegraad (Latitude)", min_value=-90.0, max_value=90.0, value=52.1, step=0.1)
-lon = st.sidebar.number_input("Lengtegraad (Longitude)", min_value=-180.0, max_value=180.0, value=5.1, step=0.1)
+# 2. CDS API Client initialiseren
+def get_cds_client():
+  url = st.secrets.get("CDS_URL", "https://cds.climate.copernicus.eu/api")
+  key = st.secrets.get("CDS_KEY", None)
+  if not key:
+    st.error(
+        "⚠️ Geen CDS_KEY gevonden in Streamlit Secrets! Voeg de sleutel toe via"
+        " de Instellingen van de app."
+    )
+    st.stop()
+  return cdsapi.Client(url=url, key=key)
 
-start_year = st.sidebar.number_input("Startjaar", min_value=1940, max_value=2025, value=1990)
-end_year = st.sidebar.number_input("Eindjaar", min_value=1940, max_value=2025, value=2023)
 
-if start_year > end_year:
-    st.sidebar.error("Startjaar moet kleiner of gelijk zijn aan het eindjaar.")
+# 3. Geocoding via Open-Meteo API
+def geocode_location(location_name):
+  preset_cities = {
+      "middelburg": (51.4988, 3.6109, "Middelburg, Zeeland, Nederland"),
+      "rotterdam": (51.9244, 4.4777, "Rotterdam, Zuid-Holland, Nederland"),
+      "amsterdam": (52.3676, 4.9041, "Amsterdam, Noord-Holland, Nederland"),
+      "breda": (51.5866, 4.7759, "Breda, Noord-Brabant, Nederland"),
+      "bergen op zoom": (
+          51.4946,
+          4.2872,
+          "Bergen op Zoom, Noord-Brabant, Nederland",
+      ),
+      "dresden": (51.0504, 13.7373, "Dresden, Saksen, Duitsland"),
+      "utrecht": (52.0907, 5.1214, "Utrecht, Nederland"),
+      "eindhoven": (51.4416, 5.4697, "Eindhoven, Noord-Brabant, Nederland"),
+  }
 
-# --- DATA FETCHING FUNCTION ---
-@st.cache_data(show_spinner=False)
-def fetch_era5_data(lat, lon, start_yr, end_yr):
-    c = cdsapi.Client()
-    
-    years = [str(y) for y in range(start_yr, end_yr + 1)]
-    months = [f"{m:02d}" for m in range(1, 13)]
-    
-    # Bounding box rondom de geselecteerde coördinaten
-    area = [lat + 0.25, lon - 0.25, lat - 0.25, lon + 0.25]
-    
-    with tempfile.NamedTemporaryFile(suffix='.nc', delete=False) as tmp_file:
-        temp_filename = tmp_file.name
+  clean_query = location_name.strip().lower()
+  if clean_query in preset_cities:
+    return preset_cities[clean_query]
+
+  try:
+    url = f"https://geocoding-api.open-meteo.com/v1/search?name={requests.utils.quote(location_name)}&count=1&language=nl&format=json"
+    response = requests.get(url, timeout=5)
+
+    if response.status_code == 200:
+      data = response.json()
+      if "results" in data and len(data["results"]) > 0:
+        result = data["results"][0]
+        lat = round(result["latitude"], 4)
+        lon = round(result["longitude"], 4)
+
+        name = result.get("name", location_name)
+        country = result.get("country", "")
+        admin1 = result.get("admin1", "")
+
+        address_parts = [p for p in [name, admin1, country] if p]
+        full_address = ", ".join(address_parts)
+
+        return lat, lon, full_address
+  except Exception:
+    pass
+
+  return None, None, None
+
+
+# 4. Functie om live ERA5 data op te halen
+@st.cache_data(show_spinner="Live ERA5-data ophalen bij Copernicus CDS...")
+def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
+  c = get_cds_client()
+  jaren = [str(y) for y in range(start_jaar, eind_jaar + 1)]
+
+  temp_dir = tempfile.gettempdir()
+  output_path = os.path.join(
+      temp_dir, f"era5_{lat}_{lon}_{start_jaar}_{eind_jaar}.nc"
+  )
+
+  request = {
+      "product_type": "monthly_averaged_reanalysis",
+      "variable": "2m_temperature",
+      "year": jaren,
+      "month": [f"{m:02d}" for m in range(1, 13)],
+      "time": "00:00",
+      "area": [
+          round(lat + 0.25, 2),
+          round(lon - 0.25, 2),
+          round(lat - 0.25, 2),
+          round(lon + 0.25, 2),
+      ],
+      "format": "netcdf",
+  }
+
+  c.retrieve(
+      "reanalysis-era5-single-levels-monthly-means", request, output_path
+  )
+
+  ds = xr.open_dataset(output_path)
+
+  # Tijdsdimensie detecteren
+  time_dim = None
+  for possible_time in ["valid_time", "time", "date", "valid_month"]:
+    if possible_time in ds.dims or possible_time in ds.coords:
+      time_dim = possible_time
+      break
+
+  if not time_dim:
+    st.error(
+        "Kon de tijdsdimensie niet vinden in het CDS bestand. Gevonden"
+        f" variabelen: {list(ds.coords.keys())}"
+    )
+    st.stop()
+
+  # Variabele detecteren
+  var_name = None
+  for possible_var in ["t2m", "2m_temperature", "var167"]:
+    if possible_var in ds.data_vars:
+      var_name = possible_var
+      break
+
+  if not var_name:
+    var_name = list(ds.data_vars.keys())[0]
+
+  ds_point = ds.sel(latitude=lat, longitude=lon, method="nearest")
+  df = ds_point[[var_name]].to_dataframe().reset_index()
+
+  df["time_clean"] = pd.to_datetime(df[time_dim])
+  df["temperatuur_c"] = df[var_name] - 273.15
+  df["jaar"] = df["time_clean"].dt.year
+  df["maand"] = df["time_clean"].dt.month
+
+  return df
+
+
+# 5. Session State initialiseren
+if "lat" not in st.session_state:
+  st.session_state["lat"] = 51.4988
+if "lon" not in st.session_state:
+  st.session_state["lon"] = 3.6109
+if "location_name" not in st.session_state:
+  st.session_state["location_name"] = "Middelburg, Zeeland, Nederland"
+
+
+# Callbacks voor synchronisatie van invoervelden
+def update_coords_from_search():
+  query = st.session_state.get("city_input_key", "")
+  if query.strip():
+    found_lat, found_lon, full_address = geocode_location(query)
+    if found_lat is not None and found_lon is not None:
+      st.session_state["lat"] = found_lat
+      st.session_state["lon"] = found_lon
+      st.session_state["location_name"] = full_address
+      st.session_state["input_lat"] = found_lat
+      st.session_state["input_lon"] = found_lon
+      st.toast(f"📍 Gevonden: {full_address}", icon="✅")
+    else:
+      st.toast(
+          "❌ Locatie niet gevonden. Controleer de spelling.", icon="⚠️"
+      )
+
+
+def on_manual_coord_change():
+  st.session_state["lat"] = st.session_state["input_lat"]
+  st.session_state["lon"] = st.session_state["input_lon"]
+  st.session_state["location_name"] = "Aangepaste coördinaten"
+
+
+# 6. Zijbalk instellingen
+st.sidebar.header("⚙️ Instellingen")
+
+st.sidebar.subheader("1. Locatie zoeken")
+
+st.sidebar.text_input(
+    "Voer een stad of locatie in:",
+    value="Middelburg",
+    key="city_input_key",
+    help="Bijv. Middelburg, Rotterdam, Breda, Dresden of Parijs",
+)
+
+st.sidebar.button(
+    "🔍 Zoek & Kopieer Coördinaten",
+    on_click=update_coords_from_search,
+    use_container_width=True,
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Geselecteerde Coördinaten:**")
+
+latitude = st.sidebar.number_input(
+    "Breedtegraad (Lat)",
+    min_value=-90.0,
+    max_value=90.0,
+    step=0.01,
+    format="%.4f",
+    key="input_lat",
+    value=st.session_state["lat"],
+    on_change=on_manual_coord_change,
+)
+
+longitude = st.sidebar.number_input(
+    "Lengtegraad (Lon)",
+    min_value=-180.0,
+    max_value=180.0,
+    step=0.01,
+    format="%.4f",
+    key="input_lon",
+    value=st.session_state["lon"],
+    on_change=on_manual_coord_change,
+)
+
+st.sidebar.subheader("2. Periode")
+jaar_bereik = st.sidebar.slider("Jaarbereik", 1950, 2025, (1990, 2024))
+
+fetch_data = st.sidebar.button(
+    "🚀 Haal ERA5 Data Op", type="primary", use_container_width=True
+)
+
+
+# 7. Hoofdscherm logica
+if fetch_data or "era5_df" in st.session_state:
+  if fetch_data:
+    current_lat = st.session_state["input_lat"]
+    current_lon = st.session_state["input_lon"]
+    current_label = st.session_state.get(
+        "location_name", "Aangepaste coördinaten"
+    )
 
     try:
-        c.retrieve(
-            'reanalysis-era5-single-levels-monthly-means',
-            {
-                'product_type': 'monthly_averaged_reanalysis',
-                'variable': [
-                    '2m_temperature',
-                    'total_precipitation',
-                    '10m_u_component_of_wind',
-                    '10m_v_component_of_wind',
-                    'surface_solar_radiation_downwards',
-                    'forecast_albedo'
-                ],
-                'year': years,
-                'month': months,
-                'time': '00:00',
-                'area': area,
-                'format': 'netcdf',
-            },
-            temp_filename
+      with st.spinner("Verbinding maken met Copernicus CDS..."):
+        st.session_state["era5_df"] = download_era5_point_data(
+            current_lat, current_lon, jaar_bereik[0], jaar_bereik[1]
         )
-        
-        # Open dataset met xarray
-        ds = xr.open_dataset(temp_filename)
-        
-        # Selecteer de dichtstbijzijnde gridcel
-        ds_point = ds.sel(latitude=lat, longitude=lon, method='nearest')
-        df = ds_point.to_dataframe().reset_index()
-        
-        ds.close()
-        return df
-
-    finally:
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
-
-# --- MAIN CONTROLS & FETCHING ---
-if st.sidebar.button("Data Ophalen & Analyseren", type="primary"):
-    with st.spinner("Data wordt opgehaald bij Copernicus CDS... Dit kan even duren."):
-        try:
-            df = fetch_era5_data(lat, lon, start_year, end_year)
-            st.session_state['era5_df'] = df
-            st.success("Data succesvol geladen!")
-        except Exception as e:
-            st.error(f"Er is een fout opgetreden bij het ophalen van de data: {e}")
-
-# --- DASHBOARD CONTENT ---
-if 'era5_df' in st.session_state:
-    df = st.session_state['era5_df']
-    
-    # Preprocessing
-    if 't2m' in df.columns:
-        df['t2m_celsius'] = df['t2m'] - 273.15
-    if 'tp' in df.columns:
-        df['tp_mm_day'] = df['tp'] * 1000
-    if 'u10' in df.columns and 'v10' in df.columns:
-        df['wind_speed'] = (df['u10']**2 + df['v10']**2)**0.5
-    if 'ssrd' in df.columns:
-        df['ssrd_wm2'] = df['ssrd'] / 86400  # J/m² per dag naar W/m²
-
-    tabs = st.tabs([
-        "🌡️ Temperatuur", 
-        "🌧️ Neerslag", 
-        "💨 Wind", 
-        "☀️ Zonnestraling", 
-        "📋 Data Tabel"
-    ])
-
-    # Tab 1: Temperatuur
-    with tabs[0]:
-        st.subheader("2m Temperatuur Trend (°C)")
-        if 't2m_celsius' in df.columns:
-            fig_t = go.Figure()
-            fig_t.add_trace(go.Scatter(x=df['valid_time'] if 'valid_time' in df.columns else df['time'], 
-                                       y=df['t2m_celsius'], 
-                                       mode='lines', 
-                                       name='Temperatuur (°C)',
-                                       line=dict(color='firebrick')))
-            fig_t.update_layout(xaxis_title="Tijd", yaxis_title="Temperatuur (°C)", hovermode="x unified")
-            st.plotly_chart(fig_t, use_container_width=True)
-        else:
-            st.warning("Temperatuurdata (t2m) niet gevonden in de dataset.")
-
-    # Tab 2: Neerslag
-    with tabs[1]:
-        st.subheader("Totale Neerslag (mm/dag equivalent)")
-        if 'tp_mm_day' in df.columns:
-            fig_p = go.Figure()
-            fig_p.add_trace(go.Bar(x=df['valid_time'] if 'valid_time' in df.columns else df['time'], 
-                                   y=df['tp_mm_day'], 
-                                   name='Neerslag (mm/dag)',
-                                   marker_color='royalblue'))
-            fig_p.update_layout(xaxis_title="Tijd", yaxis_title="Neerslag (mm/dag)", hovermode="x unified")
-            st.plotly_chart(fig_p, use_container_width=True)
-        else:
-            st.warning("Neerslagdata (tp) niet gevonden in de dataset.")
-
-    # Tab 3: Wind
-    with tabs[2]:
-        st.subheader("10m Windsnelheid (m/s)")
-        if 'wind_speed' in df.columns:
-            fig_w = go.Figure()
-            fig_w.add_trace(go.Scatter(x=df['valid_time'] if 'valid_time' in df.columns else df['time'], 
-                                       y=df['wind_speed'], 
-                                       mode='lines', 
-                                       name='Windsnelheid (m/s)',
-                                       line=dict(color='seagreen')))
-            fig_w.update_layout(xaxis_title="Tijd", yaxis_title="Windsnelheid (m/s)", hovermode="x unified")
-            st.plotly_chart(fig_w, use_container_width=True)
-        else:
-            st.warning("Winddata (u10/v10) niet gevonden in de dataset.")
-
-    # Tab 4: Zonnestraling
-    with tabs[3]:
-        st.subheader("Oppervlakte Zonnestraling (W/m²)")
-        if 'ssrd_wm2' in df.columns:
-            fig_s = go.Figure()
-            fig_s.add_trace(go.Scatter(x=df['valid_time'] if 'valid_time' in df.columns else df['time'], 
-                                       y=df['ssrd_wm2'], 
-                                       mode='lines', 
-                                       name='Zonnestraling (W/m²)',
-                                       line=dict(color='orange')))
-            fig_s.update_layout(xaxis_title="Tijd", yaxis_title="Zonnestraling (W/m²)", hovermode="x unified")
-            st.plotly_chart(fig_s, use_container_width=True)
-        else:
-            st.warning("Zonnestralingsdata (ssrd) niet gevonden in de dataset.")
-
-    # Tab 5: Data Tabel
-    with tabs[4]:
-        st.subheader("Ruwe Data Preview")
-        st.dataframe(df, use_container_width=True)
-        
-        # Download knop voor de verwerkte CSV
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Data als CSV",
-            data=csv,
-            file_name=f"era5_data_{lat}_{lon}_{start_year}_{end_year}.csv",
-            mime="text/csv",
+        st.session_state["loc_info"] = (
+            f"{current_label} (Lat: {current_lat:.4f}°N, Lon:"
+            f" {current_lon:.4f}°E)"
         )
+    except Exception as e:
+      st.error(f"Er is een fout opgetreden bij het ophalen van de data: {e}")
+      st.stop()
+
+  df = st.session_state["era5_df"]
+
+  st.subheader("📊 Live ERA5 2m Temperatuur")
+  st.caption(f"📍 **Locatie:** {st.session_state['loc_info']}")
+
+  # Maandnamen toevoegen
+  maand_namen = {
+      1: "Jan",
+      2: "Feb",
+      3: "Mrt",
+      4: "Apr",
+      5: "Mei",
+      6: "Jun",
+      7: "Jul",
+      8: "Aug",
+      9: "Sep",
+      10: "Okt",
+      11: "Nov",
+      12: "Dec",
+  }
+  df["maand_naam"] = df["maand"].map(maand_namen)
+
+  # --- STATISTIEKEN BEREKENEN PER MAAND ---
+  df_stats = (
+      df.groupby(["maand", "maand_naam"])["temperatuur_c"]
+      .agg(
+          gemiddelde="mean",
+          p50="median",
+          p90=lambda x: np.percentile(x, 90),
+          min_temp="min",
+          max_temp="max",
+      )
+      .reset_index()
+  )
+
+  jaargemiddelde = df["temperatuur_c"].mean()
+
+  # Metrics
+  warmste_maand_row = df_stats.loc[df_stats["gemiddelde"].idxmax()]
+  koudste_maand_row = df_stats.loc[df_stats["gemiddelde"].idxmin()]
+
+  col1, col2, col3 = st.columns(3)
+  col1.metric("Klimaatgemiddelde (Totaal)", f"{jaargemiddelde:.2f} °C")
+  col2.metric(
+      f"Warmste Maand ({warmste_maand_row['maand_naam']})",
+      f"{warmste_maand_row['gemiddelde']:.2f} °C",
+      f"P90: {warmste_maand_row['p90']:.2f} °C",
+  )
+  col3.metric(
+      f"Koudste Maand ({koudste_maand_row['maand_naam']})",
+      f"{koudste_maand_row['gemiddelde']:.2f} °C",
+      f"P90: {koudste_maand_row['p90']:.2f} °C",
+  )
+
+  # --- BOXPLOT INSTELLEN MET PLOTLY GRAPH OBJECTS ---
+  fig = go.Figure()
+
+  # 1. Toevoegen van de Boxplot (Toont P50/Mediaan, Min, Max, Kwadranten en Whiskers)
+  fig.add_trace(
+      go.Box(
+          x=df["maand_naam"],
+          y=df["temperatuur_c"],
+          name="Verdeling (P50 & Range)",
+          boxpoints=False,  # Geen losse stippen voor een strak beeld
+          fillcolor="rgba(100, 149, 237, 0.4)",  # Zachtblauw
+          line=dict(color="#1f77b4", width=2),
+          whiskerwidth=0.8,
+          boxmean=True,  # Toont automatisch het GEMIDDELDE als een gestreepte/stippellijn in de box
+      )
+  )
+
+  # 2. Toevoegen van een opvallende marker voor het GEMIDDELDE per maand
+  fig.add_trace(
+      go.Scatter(
+          x=df_stats["maand_naam"],
+          y=df_stats["gemiddelde"],
+          mode="markers+lines",
+          name="Gemiddelde (◆)",
+          marker=dict(size=10, color="red", symbol="diamond"),
+          line=dict(color="red", width=1.5, dash="dot"),
+          hovertemplate=(
+              "Maand: %{x}<br>Gemiddelde: %{y:.2f} °C<extra></extra>"
+          ),
+      )
+  )
+
+  # Layout verfijnen
+  fig.update_layout(
+      title=(
+          "Maandelijkse Temperatuurverdeling & Extremen"
+          f" ({jaar_bereik[0]}-{jaar_bereik[1]})"
+      ),
+      yaxis_title="Temperatuur (°C)",
+      xaxis_title="Maand",
+      xaxis=dict(
+          categoryorder="array", categoryarray=list(maand_namen.values())
+      ),
+      hovermode="x unified",
+      legend=dict(
+          orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+      ),
+  )
+
+  # Horizontale stippellijn voor het klimaatgemiddelde over alle jaren
+  fig.add_hline(
+      y=jaargemiddelde,
+      line_dash="dot",
+      line_color="gray",
+      annotation_text=f"Norm: {jaargemiddelde:.2f} °C",
+      annotation_position="bottom right",
+  )
+
+  st.plotly_chart(fig, use_container_width=True)
+
+  # Ruwe statistieken overzichtstabel
+  with st.expander("📄 Bekijk de berekende statistieken per maand"):
+    st.dataframe(
+        df_stats[[
+            "maand_naam",
+            "gemiddelde",
+            "p50",
+            "p90",
+            "min_temp",
+            "max_temp",
+        ]].rename(columns={
+            "maand_naam": "Maand",
+            "gemiddelde": "Gemiddelde (°C)",
+            "p50": "P50 / Mediaan (°C)",
+            "p90": "P90 (°C)",
+            "min_temp": "Minimum (°C)",
+            "max_temp": "Maximum (°C)",
+        })
+    )
+
 else:
-    st.info("Kies je gewenste locatie en periode in de zijbalk en klik op 'Data Ophalen & Analyseren'.")
+  st.info(
+      "👈 Zoek een locatie of stel coördinaten in de zijbalk in en klik op **'🚀"
+      " Haal ERA5 Data Op'**."
+  )
