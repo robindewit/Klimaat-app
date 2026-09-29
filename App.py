@@ -177,7 +177,7 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         except Exception as e:
             st.error(
                 f"Kan het gedownloade NetCDF-bestand niet openen: {e}. Zorg ervoor"
-                " dat 'netcdf4' of 'h5netcdf' is geïnstalleerd."
+                " dat 'netcdf4' of 'h5netcdf' is geïnstalleerd in requirements.txt."
             )
             st.stop()
 
@@ -243,7 +243,6 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     if tp_var:
         units = ds[tp_var].attrs.get("units", "m s**-1")
         if units in ["m s**-1", "m/s", "m s-1"]:
-            # ERA5 Monthly Mean flux (m/s) -> mm per maand
             df["neerslag_mm"] = (
                 df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
             )
@@ -274,18 +273,12 @@ def update_coords_from_search():
         if found_lat is not None and found_lon is not None:
             st.session_state["lat"] = found_lat
             st.session_state["lon"] = found_lon
-            st.session_state["location_name"] = full_address
             st.session_state["input_lat"] = found_lat
             st.session_state["input_lon"] = found_lon
+            st.session_state["location_name"] = full_address
             st.toast(f"📍 Gevonden: {full_address}", icon="✅")
         else:
             st.toast("❌ Locatie niet gevonden. Controleer de spelling.", icon="⚠️")
-
-
-def on_manual_coord_change():
-    st.session_state["lat"] = st.session_state["input_lat"]
-    st.session_state["lon"] = st.session_state["input_lon"]
-    st.session_state["location_name"] = "Aangepaste coördinaten"
 
 
 # 6. Zijbalk instellingen
@@ -308,6 +301,12 @@ st.sidebar.button(
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Geselecteerde Coördinaten:**")
 
+# Controleer en initialiseer input_lat / input_lon veilig
+if "input_lat" not in st.session_state:
+    st.session_state["input_lat"] = st.session_state["lat"]
+if "input_lon" not in st.session_state:
+    st.session_state["input_lon"] = st.session_state["lon"]
+
 latitude = st.sidebar.number_input(
     "Breedtegraad (Lat)",
     min_value=-90.0,
@@ -315,8 +314,6 @@ latitude = st.sidebar.number_input(
     step=0.01,
     format="%.4f",
     key="input_lat",
-    value=st.session_state["lat"],
-    on_change=on_manual_coord_change,
 )
 
 longitude = st.sidebar.number_input(
@@ -326,9 +323,11 @@ longitude = st.sidebar.number_input(
     step=0.01,
     format="%.4f",
     key="input_lon",
-    value=st.session_state["lon"],
-    on_change=on_manual_coord_change,
 )
+
+# Hoofdwinstemmingen bijwerken vanuit de widgets
+st.session_state["lat"] = latitude
+st.session_state["lon"] = longitude
 
 st.sidebar.subheader("2. Periode")
 jaar_bereik = st.sidebar.slider("Jaarbereik", 1950, 2025, (1990, 2024))
