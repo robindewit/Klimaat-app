@@ -308,12 +308,12 @@ if fetch_data or "era5_df" in st.session_state:
   # --- BOXPLOT INSTELLEN MET PLOTLY GRAPH OBJECTS ---
   fig = go.Figure()
 
-  # 1. Toevoegen van de Boxplot (Toont P50/Mediaan, Min, Max, Kwadranten en Whiskers tot P90)
+  # 1. Toevoegen van de Boxplot (Toont P50/Mediaan, Min, Max, Kwadranten en Whiskers)
   fig.add_trace(
       go.Box(
           x=df["maand_naam"],
           y=df["temperatuur_c"],
-          name="Verdeling (P50 & P90)",
+          name="Verdeling (P50 & Range)",
           boxpoints=False,  # Geen losse stippen voor een strak beeld
           fillcolor="rgba(100, 149, 237, 0.4)",  # Zachtblauw
           line=dict(color="#1f77b4", width=2),
@@ -334,19 +334,6 @@ if fetch_data or "era5_df" in st.session_state:
           hovertemplate=(
               "Maand: %{x}<br>Gemiddelde: %{y:.2f} °C<extra></extra>"
           ),
-      )
-  )
-
-  # 3. Toevoegen van een lijn voor P90 (Top 10% grens)
-  fig.add_trace(
-      go.Scatter(
-          x=df_stats["maand_naam"],
-          y=df_stats["p90"],
-          mode="lines+markers",
-          name="90% Percentiel (P90)",
-          line=dict(color="#ff7f0e", width=2, dash="dash"),
-          marker=dict(size=6, color="#ff7f0e"),
-          hovertemplate="Maand: %{x}<br>P90: %{y:.2f} °C<extra></extra>",
       )
   )
 
