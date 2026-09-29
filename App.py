@@ -3,6 +3,7 @@ import tempfile
 import cdsapi
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
@@ -95,6 +96,14 @@ def ms_to_beaufort(ms):
     else: return 12
 
 
+# Helper functie om graden om te zetten naar windrichting sector (16 windstreken)
+def degrees_to_cardinal(deg):
+    dirs = ['N', 'NNO', 'NO', 'ONO', 'O', 'OZO', 'ZO', 'ZZO', 
+            'Z', 'ZZW', 'ZW', 'WZW', 'W', 'WNW', 'NW', 'NNW']
+    ix = int((deg + 11.25) / 22.5) % 16
+    return dirs[ix]
+
+
 # 4. Functie om live ERA5 data op te halen (Temperatuur + Wind)
 @st.cache_data(show_spinner="Live ERA5-data ophalen bij Copernicus CDS...")
 def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
@@ -171,6 +180,7 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         
         # Meteorologische windrichting (waar de wind VANDAAN komt in graden)
         df["wind_dir_deg"] = (270 - np.arctan2(df[v_var], df[u_var]) * (180 / np.pi)) % 360
+        df["wind_dir_cardinal"] = df["wind_dir_deg"].apply(degrees_to_cardinal)
 
     ds.close()
     return df
@@ -369,21 +379,18 @@ if fetch_data or "era5_df" in st.session_state:
     with tab_wind:
         st.subheader("💨 ERA5 10m Wind Klimatologie")
 
-        # Selectie van de dynamische kolom op basis van de gekozen eenheid
+        # Selectie van de dynamische kolom
         if wind_unit == "m/s":
             wind_col = "wind_speed_ms"
             unit_label = "m/s"
-            fmt = "%.2f"
         elif wind_unit == "kt":
             wind_col = "wind_speed_kt"
             unit_label = "kt"
-            fmt = "%.1f"
         else:
             wind_col = "wind_speed_bft"
             unit_label = "Bft"
-            fmt = "%.1f"
 
-        # Wind statistieken berekenen
+        # Wind statistieken
         df_stats_w = (
             df.groupby(["maand", "maand_naam"])[wind_col]
             .agg(
@@ -395,40 +402,31 @@ if fetch_data or "era5_df" in st.session_state:
             .reset_index()
         )
 
-        # Windrichting vectorieel middelen per maand
-        # (Gewoon rekenkundig gemiddelde van graden is fout rond 0/360 graden)
-        u_col = next((v for v in ["u10", "10m_u_component_of_wind", "var165"] if v in df.columns), None)
-        v_col = next((v for v in ["v10", "10m_v_component_of_wind", "var166"] if v in df.columns), None)
-        
-        df_dir = df.groupby(["maand"])[[u_col, v_col]].mean().reset_index()
-        df_dir["gem_dir_deg"] = (270 - np.arctan2(df_dir[v_col], df_dir[u_col]) * (180 / np.pi)) % 360
-        df_stats_w["gem_dir_deg"] = df_dir["gem_dir_deg"]
-
         # Wind Metrics
         gem_wind_totaal = df[wind_col].mean()
         windigste_maand = df_stats_w.loc[df_stats_w["gemiddelde"].idxmax()]
-        
+        p90_totaal = np.percentile(df[wind_col], 90)
+
         w_col1, w_col2, w_col3 = st.columns(3)
         w_col1.metric("Klimaatgemiddelde Windsnelheid", f"{gem_wind_totaal:.2f} {unit_label}")
         w_col2.metric(
             f"Windrijkste Maand ({windigste_maand['maand_naam']})",
             f"{windigste_maand['gemiddelde']:.2f} {unit_label}",
-            f"P90: {windigste_maand['p90']:.2f} {unit_label}"
+            f"P50: {windigste_maand['p50']:.2f} {unit_label}"
         )
         w_col3.metric(
-            "Dominante Heersende Richting",
-            f"{df['wind_dir_deg'].mean():.0f}°"
+            f"90e Percentiel (P90 Totaal)",
+            f"{p90_totaal:.2f} {unit_label}"
         )
 
         # Grafiek Windsnelheid
         fig_w = go.Figure()
 
-        # Boxplot
         fig_w.add_trace(
             go.Box(
                 x=df["maand_naam"],
                 y=df[wind_col],
-                name=f"Spreiding (P50 Mediaan)",
+                name="Spreiding (P50 Mediaan)",
                 boxpoints=False,
                 fillcolor="rgba(46, 204, 113, 0.3)",
                 line=dict(color="#27ae60", width=2),
@@ -436,19 +434,6 @@ if fetch_data or "era5_df" in st.session_state:
             )
         )
 
-        # P90 Lijn
-        fig_w.add_trace(
-            go.Scatter(
-                x=df_stats_w["maand_naam"],
-                y=df_stats_w["p90"],
-                mode="markers+lines",
-                name="90e Percentiel (P90)",
-                marker=dict(size=8, color="orange", symbol="triangle-up"),
-                line=dict(color="orange", width=2, dash="dash"),
-            )
-        )
-
-        # Gemiddelde Lijn
         fig_w.add_trace(
             go.Scatter(
                 x=df_stats_w["maand_naam"],
@@ -461,7 +446,7 @@ if fetch_data or "era5_df" in st.session_state:
         )
 
         fig_w.update_layout(
-            title=f"Windsnelheid Klimatologie per Maand in {unit_label} ({jaar_bereik[0]}-{jaar_bereik[1]})",
+            title=f"Windsnelheid Klimatologie per Maand ({jaar_bereik[0]}-{jaar_bereik[1]})",
             yaxis_title=f"Windsnelheid ({unit_label})",
             xaxis_title="Maand",
             xaxis=dict(categoryorder="array", categoryarray=list(maand_namen.values())),
@@ -469,32 +454,58 @@ if fetch_data or "era5_df" in st.session_state:
         )
         st.plotly_chart(fig_w, use_container_width=True)
 
-        # Windrichting Overzichtstabel
-        st.subheader("📋 Windstatistieken & Heersende Windrichting per Maand")
-        
-        df_wind_show = df_stats_w[[
-            "maand_naam", "gemiddelde", "p50", "p90", "max_wind", "gem_dir_deg"
-        ]].copy()
+        st.markdown("---")
+        st.subheader("🧭 Windroos (Frequentie van Windrichtingen)")
 
-        df_wind_show.columns = [
-            "Maand",
-            f"Gemiddelde ({unit_label})",
-            f"P50 Mediaan ({unit_label})",
-            f"P90 ({unit_label})",
-            f"Maximum ({unit_label})",
-            "Heersende Richting (°)"
-        ]
-
-        st.dataframe(
-            df_wind_show.style.format({
-                f"Gemiddelde ({unit_label})": fmt,
-                f"P50 Mediaan ({unit_label})": fmt,
-                f"P90 ({unit_label})": fmt,
-                f"Maximum ({unit_label})": fmt,
-                "Heersende Richting (°)": "%.0f°"
-            }),
-            use_container_width=True
+        # Maandfilter optie voor de Windroos
+        selected_month = st.selectbox(
+            "Filter Windroos op Maand:",
+            options=["Hele Jaar"] + list(maand_namen.values()),
+            index=0
         )
+
+        if selected_month == "Hele Jaar":
+            df_rose = df.copy()
+        else:
+            df_rose = df[df["maand_naam"] == selected_month]
+
+        # Aanmaken van windsnelheid-klassen
+        if wind_unit == "m/s":
+            bins = [0, 2, 4, 6, 8, 10, 100]
+            labels = ['< 2', '2 - 4', '4 - 6', '6 - 8', '8 - 10', '> 10']
+        elif wind_unit == "kt":
+            bins = [0, 4, 8, 12, 16, 22, 100]
+            labels = ['< 4', '4 - 8', '8 - 12', '12 - 16', '16 - 22', '> 22']
+        else:
+            bins = [-0.5, 1.5, 3.5, 5.5, 7.5, 12.5]
+            labels = ['0-1 Bft', '2-3 Bft', '4-5 Bft', '6-7 Bft', '> 8 Bft']
+
+        df_rose['speed_class'] = pd.cut(df_rose[wind_col], bins=bins, labels=labels, include_lowest=True)
+
+        # Windroos Plotly Graph
+        fig_rose = px.bar_polar(
+            df_rose,
+            r="wind_speed_ms",
+            theta="wind_dir_cardinal",
+            color="speed_class",
+            template="plotly_white",
+            color_discrete_sequence=px.colors.sequential.Viridis,
+            title=f"Windroos - {selected_month} ({jaar_bereik[0]}-{jaar_bereik[1]})",
+            category_orders={
+                "wind_dir_cardinal": ['N', 'NNO', 'NO', 'ONO', 'O', 'OZO', 'ZO', 'ZZO', 
+                                      'Z', 'ZZW', 'ZW', 'WZW', 'W', 'WNW', 'NW', 'NNW']
+            }
+        )
+
+        fig_rose.update_layout(
+            polar=dict(
+                radialaxis=dict(ticksuffix=" %", angle=45),
+                angularaxis=dict(direction="clockwise")
+            ),
+            legend_title=f"Snelheid ({unit_label})"
+        )
+
+        st.plotly_chart(fig_rose, use_container_width=True)
 
 else:
     st.info(
