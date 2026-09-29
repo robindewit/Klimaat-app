@@ -17,7 +17,7 @@ st.set_page_config(
 st.title("🌍 ERA5 Klimaat Explorer")
 st.markdown("Analyseer live **ECMWF ERA5** heranalysedata via de Copernicus Climate Data Store (CDS).")
 
-# 2. CDS API Client initialiseren via Secrets
+# 2. CDS API Client initialiseren
 def get_cds_client():
     url = st.secrets.get("CDS_URL", "https://cds.climate.copernicus.eu/api")
     key = st.secrets.get("CDS_KEY", None)
@@ -26,42 +26,65 @@ def get_cds_client():
         st.stop()
     return cdsapi.Client(url=url, key=key)
 
-# 3. Functie om live ERA5 data op te halen (met caching)
-@st.cache_data(show_spinner="Live ERA5-data ophalen bij Copernicus CDS (dit duurt enkele seconden)...")
+# 3. Functie om live ERA5 data op te halen
+@st.cache_data(show_spinner="Live ERA5-data ophalen bij Copernicus CDS...")
 def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     c = get_cds_client()
     jaren = [str(y) for y in range(start_jaar, eind_jaar + 1)]
     
-    # Tijdelijke map en bestand opzetten op de cloudserver
     temp_dir = tempfile.gettempdir()
     output_path = os.path.join(temp_dir, f"era5_{lat}_{lon}_{start_jaar}_{eind_jaar}.nc")
     
-    # CDS verzoek voor 2m temperatuur (maandgemiddelden)
     request = {
-        'format': 'netcdf',
+        'dataset_short_name': 'reanalysis-era5-single-levels-monthly-means',
         'product_type': 'monthly_averaged_reanalysis',
         'variable': '2m_temperature',
         'year': jaren,
         'month': [f"{m:02d}" for m in range(1, 13)],
         'time': '00:00',
-        'area': [lat + 0.25, lon - 0.25, lat - 0.25, lon + 0.25], # Klein blokje rondom locatie
+        'area': [lat + 0.25, lon - 0.25, lat - 0.25, lon + 0.25],
+        'data_format': 'netcdf',
+        'download_format': 'unarchived'
     }
     
     c.retrieve('reanalysis-era5-single-levels-monthly-means', request, output_path)
     
-    # Data inlezen met xarray
+    # Dataset openen
     ds = xr.open_dataset(output_path)
     
+    # 🔍 Slimme detectie van de Tijdsdimensie (time, valid_time, date)
+    time_dim = None
+    for possible_time in ['valid_time', 'time', 'date', 'valid_month']:
+        if possible_time in ds.dims or possible_time in ds.coords:
+            time_dim = possible_time
+            break
+            
+    if not time_dim:
+        st.error(f"Kon de tijdsdimensie niet vinden in het CDS bestand. Gevonden variabelen: {list(ds.coords.keys())}")
+        st.stop()
+
+    # 🔍 Slimme detectie van de Variabele (t2m, 2m_temperature, var167)
+    var_name = None
+    for possible_var in ['t2m', '2m_temperature', 'var167']:
+        if possible_var in ds.data_vars:
+            var_name = possible_var
+            break
+            
+    if not var_name:
+        # Kies de eerste beschikbare datavariabele als terugvaloptie
+        var_name = list(ds.data_vars.keys())[0]
+        
     # Selecteer dichtstbijzijnde punt
     ds_point = ds.sel(latitude=lat, longitude=lon, method='nearest')
     
-    # Omzetten naar Pandas DataFrame
-    df = ds_point['t2m'].to_dataframe().reset_index()
+    # DataFrame maken
+    df = ds_point[[var_name]].to_dataframe().reset_index()
     
-    # Kelvin omzetten naar Celsius
-    df['temperatuur_c'] = df['t2m'] - 273.15
-    df['jaar'] = pd.to_datetime(df['time']).dt.year
-    df['maand'] = pd.to_datetime(df['time']).dt.month
+    # Kolommen uniform maken
+    df['time_clean'] = pd.to_datetime(df[time_dim])
+    df['temperatuur_c'] = df[var_name] - 273.15  # Kelvin naar Celsius
+    df['jaar'] = df['time_clean'].dt.year
+    df['maand'] = df['time_clean'].dt.month
     
     return df
 
@@ -75,7 +98,6 @@ longitude = st.sidebar.number_input("Lengtegraad (Lon)", value=4.3, min_value=-1
 st.sidebar.subheader("2. Periode")
 jaar_bereik = st.sidebar.slider("Jaarbereik", 1950, 2025, (1990, 2024))
 
-# Knop om data ophalen te starten
 fetch_data = st.sidebar.button("🚀 Haal ERA5 Data Op", type="primary")
 
 # 5. Hoofdscherm logica
@@ -122,9 +144,9 @@ if fetch_data or "era5_df" in st.session_state:
     
     st.plotly_chart(fig, use_container_width=True)
     
-    # Tabel
+    # Ruwe dataset inzien
     with st.expander("📄 Bekijk de ruwe dataset"):
-        st.dataframe(df)
+        st.dataframe(df[['time_clean', 'jaar', 'maand', 'temperatuur_c']])
 
 else:
-    st.info("👈 Stel de gewenste coördinaten en periode in de zijbalk in en klik op **'🚀 Haal ERA5 Data Op'** om de echte klimaatdata te laden.")
+    st.info("👈 Stel de coördinaten en periode in de zijbalk in en klik op **'🚀 Haal ERA5 Data Op'**.")
