@@ -150,7 +150,7 @@ def download_era5_full_data(lat, lon, start_jaar, eind_jaar):
         "reanalysis-era5-single-levels-monthly-means", request, output_path
     )
 
-    ds = xr.open_dataset(output_path)
+    ds = xr.open_dataset(output_path, engine="netcdf4")
 
     # Tijdsdimensie bepalen
     time_dim = next(
