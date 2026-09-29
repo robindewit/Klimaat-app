@@ -3,7 +3,7 @@ import tempfile
 import cdsapi
 import numpy as np
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 import xarray as xr
@@ -256,11 +256,7 @@ if fetch_data or "era5_df" in st.session_state:
   st.subheader("📊 Live ERA5 2m Temperatuur")
   st.caption(f"📍 **Locatie:** {st.session_state['loc_info']}")
 
-  # --- MAANDELIJKSE GEMIDDELDEN BEREKENEN ---
-  # Groepeer op maandnummer (1 t/m 12) en bereken het gemiddelde over alle gekozen jaren
-  df_maand = df.groupby("maand")["temperatuur_c"].mean().reset_index()
-
-  # Voeg maandnamen toe voor een duidelijke X-as
+  # Maandnamen toevoegen
   maand_namen = {
       1: "Jan",
       2: "Feb",
@@ -271,65 +267,136 @@ if fetch_data or "era5_df" in st.session_state:
       7: "Jul",
       8: "Aug",
       9: "Sep",
-      10: "Oktd",
+      10: "Okt",
       11: "Nov",
       12: "Dec",
   }
-  df_maand["maand_naam"] = df_maand["maand"].map(maand_namen)
+  df["maand_naam"] = df["maand"].map(maand_namen)
 
-  # Totale jaarnorm (gemiddelde van alle maanden)
+  # --- STATISTIEKEN BEREKENEN PER MAAND ---
+  df_stats = (
+      df.groupby(["maand", "maand_naam"])["temperatuur_c"]
+      .agg(
+          gemiddelde="mean",
+          p50="median",
+          p90=lambda x: np.percentile(x, 90),
+          min_temp="min",
+          max_temp="max",
+      )
+      .reset_index()
+  )
+
   jaargemiddelde = df["temperatuur_c"].mean()
 
   # Metrics
-  warmste_maand_row = df_maand.loc[df_maand["temperatuur_c"].idxmax()]
-  koudste_maand_row = df_maand.loc[df_maand["temperatuur_c"].idxmin()]
+  warmste_maand_row = df_stats.loc[df_stats["gemiddelde"].idxmax()]
+  koudste_maand_row = df_stats.loc[df_stats["gemiddelde"].idxmin()]
 
   col1, col2, col3 = st.columns(3)
-  col1.metric("Jaargemiddelde (Norm)", f"{jaargemiddelde:.2f} °C")
+  col1.metric("Klimaatgemiddelde (Totaal)", f"{jaargemiddelde:.2f} °C")
   col2.metric(
       f"Warmste Maand ({warmste_maand_row['maand_naam']})",
-      f"{warmste_maand_row['temperatuur_c']:.2f} °C",
+      f"{warmste_maand_row['gemiddelde']:.2f} °C",
+      f"P90: {warmste_maand_row['p90']:.2f} °C",
   )
   col3.metric(
       f"Koudste Maand ({koudste_maand_row['maand_naam']})",
-      f"{koudste_maand_row['temperatuur_c']:.2f} °C",
+      f"{koudste_maand_row['gemiddelde']:.2f} °C",
+      f"P90: {koudste_maand_row['p90']:.2f} °C",
   )
 
-  # --- GRAFIEK PER MAAND ---
-  fig = px.line(
-      df_maand,
-      x="maand_naam",
-      y="temperatuur_c",
+  # --- BOXPLOT INSTELLEN MET PLOTLY GRAPH OBJECTS ---
+  fig = go.Figure()
+
+  # 1. Toevoegen van de Boxplot (Toont P50/Mediaan, Min, Max, Kwadranten en Whiskers tot P90)
+  fig.add_trace(
+      go.Box(
+          x=df["maand_naam"],
+          y=df["temperatuur_c"],
+          name="Verdeling (P50 & P90)",
+          boxpoints=False,  # Geen losse stippen voor een strak beeld
+          fillcolor="rgba(100, 149, 237, 0.4)",  # Zachtblauw
+          line=dict(color="#1f77b4", width=2),
+          whiskerwidth=0.8,
+          boxmean=True,  # Toont automatisch het GEMIDDELDE als een gestreepte/stippellijn in de box
+      )
+  )
+
+  # 2. Toevoegen van een opvallende marker voor het GEMIDDELDE per maand
+  fig.add_trace(
+      go.Scatter(
+          x=df_stats["maand_naam"],
+          y=df_stats["gemiddelde"],
+          mode="markers+lines",
+          name="Gemiddelde (◆)",
+          marker=dict(size=10, color="red", symbol="diamond"),
+          line=dict(color="red", width=1.5, dash="dot"),
+          hovertemplate=(
+              "Maand: %{x}<br>Gemiddelde: %{y:.2f} °C<extra></extra>"
+          ),
+      )
+  )
+
+  # 3. Toevoegen van een lijn voor P90 (Top 10% grens)
+  fig.add_trace(
+      go.Scatter(
+          x=df_stats["maand_naam"],
+          y=df_stats["p90"],
+          mode="lines+markers",
+          name="90% Percentiel (P90)",
+          line=dict(color="#ff7f0e", width=2, dash="dash"),
+          marker=dict(size=6, color="#ff7f0e"),
+          hovertemplate="Maand: %{x}<br>P90: %{y:.2f} °C<extra></extra>",
+      )
+  )
+
+  # Layout verfijnen
+  fig.update_layout(
       title=(
-          "Gemiddelde Temperatuur per Maand"
+          "Maandelijkse Temperatuurverdeling & Extremen"
           f" ({jaar_bereik[0]}-{jaar_bereik[1]})"
       ),
-      markers=True,
-      labels={
-          "temperatuur_c": "Temperatuur (°C)",
-          "maand_naam": "Maand",
-      },
+      yaxis_title="Temperatuur (°C)",
+      xaxis_title="Maand",
+      xaxis=dict(
+          categoryorder="array", categoryarray=list(maand_namen.values())
+      ),
+      hovermode="x unified",
+      legend=dict(
+          orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+      ),
   )
 
-  # Horizontale stippellijn voor het algehele gemiddelde
+  # Horizontale stippellijn voor het klimaatgemiddelde over alle jaren
   fig.add_hline(
       y=jaargemiddelde,
-      line_dash="dash",
-      line_color="red",
-      annotation_text=f"Jaargemiddelde: {jaargemiddelde:.2f} °C",
-  )
-
-  # Zorg dat de volgorde van de maanden op de X-as klopt
-  fig.update_xaxes(
-      categoryorder="array",
-      categoryarray=list(maand_namen.values()),
+      line_dash="dot",
+      line_color="gray",
+      annotation_text=f"Norm: {jaargemiddelde:.2f} °C",
+      annotation_position="bottom right",
   )
 
   st.plotly_chart(fig, use_container_width=True)
 
-  # Ruwe dataset inzien
-  with st.expander("📄 Bekijk de ruwe dataset per maand"):
-    st.dataframe(df_maand[["maand", "maand_naam", "temperatuur_c"]])
+  # Ruwe statistieken overzichtstabel
+  with st.expander("📄 Bekijk de berekende statistieken per maand"):
+    st.dataframe(
+        df_stats[[
+            "maand_naam",
+            "gemiddelde",
+            "p50",
+            "p90",
+            "min_temp",
+            "max_temp",
+        ]].rename(columns={
+            "maand_naam": "Maand",
+            "gemiddelde": "Gemiddelde (°C)",
+            "p50": "P50 / Mediaan (°C)",
+            "p90": "P90 (°C)",
+            "min_temp": "Minimum (°C)",
+            "max_temp": "Maximum (°C)",
+        })
+    )
 
 else:
   st.info(
