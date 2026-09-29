@@ -169,7 +169,7 @@ def download_era5_full_data(lat, lon, start_jaar, eind_jaar):
     # Gebruik nearest neighbor om dichtstbijzijnde rasterpunt te pakken
     lat_name = "latitude" if "latitude" in ds.coords else "lat"
     lon_name = "longitude" if "longitude" in ds.coords else "lon"
-    
+
     ds_point = ds.sel({lat_name: lat, lon_name: lon}, method="nearest")
     df = ds_point.to_dataframe().reset_index()
 
@@ -759,7 +759,7 @@ if fetch_data or "era5_full_df" in st.session_state:
             )
         )
         fig_s.update_layout(
-            title="Invallende Zonnestraling op Maaiveld (W/m²)",
+            title="Globale Zonnestraling per Maand (W/m²)",
             yaxis_title="W/m²",
             xaxis=dict(
                 categoryorder="array", categoryarray=list(maand_namen.values())
@@ -767,17 +767,5 @@ if fetch_data or "era5_full_df" in st.session_state:
             hovermode="x unified",
         )
         st.plotly_chart(fig_s, use_container_width=True)
-
-    # Optionele Tabelweergave
-    with st.expander("📄 Bekijk de complete geaggregeerde tabel"):
-        st.dataframe(
-            df_t_stats.merge(df_p_stats, on=["maand", "maand_naam"]).merge(
-                df_w_stats, on=["maand", "maand_naam"]
-            )
-        )
-
 else:
-    st.info(
-        "👈 Kies een locatie en periode in de zijbalk en klik op **'🚀 Haal"
-        " Klimaatdata Op'**."
-    )
+    st.info("👈 Voer een locatie/periode in en klik op **Haal Klimaatdata Op** in de zijbalk om de studie te starten.")
