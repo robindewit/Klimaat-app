@@ -173,7 +173,6 @@ def update_coords_from_search():
 
 
 def on_manual_coord_change():
-  # Als coördinaten handmatig worden aangepast, reset de stadsnaam
   st.session_state["lat"] = st.session_state["input_lat"]
   st.session_state["lon"] = st.session_state["input_lon"]
   st.session_state["location_name"] = "Aangepaste coördinaten"
@@ -257,49 +256,80 @@ if fetch_data or "era5_df" in st.session_state:
   st.subheader("📊 Live ERA5 2m Temperatuur")
   st.caption(f"📍 **Locatie:** {st.session_state['loc_info']}")
 
-  # Jaargemiddelden berekenen
-  df_jaar = df.groupby("jaar")["temperatuur_c"].mean().reset_index()
-  klimaat_norm = df_jaar["temperatuur_c"].mean()
+  # --- MAANDELIJKSE GEMIDDELDEN BEREKENEN ---
+  # Groepeer op maandnummer (1 t/m 12) en bereken het gemiddelde over alle gekozen jaren
+  df_maand = df.groupby("maand")["temperatuur_c"].mean().reset_index()
+
+  # Voeg maandnamen toe voor een duidelijke X-as
+  maand_namen = {
+      1: "Jan",
+      2: "Feb",
+      3: "Mrt",
+      4: "Apr",
+      5: "Mei",
+      6: "Jun",
+      7: "Jul",
+      8: "Aug",
+      9: "Sep",
+      10: "Oktd",
+      11: "Nov",
+      12: "Dec",
+  }
+  df_maand["maand_naam"] = df_maand["maand"].map(maand_namen)
+
+  # Totale jaarnorm (gemiddelde van alle maanden)
+  jaargemiddelde = df["temperatuur_c"].mean()
 
   # Metrics
+  warmste_maand_row = df_maand.loc[df_maand["temperatuur_c"].idxmax()]
+  koudste_maand_row = df_maand.loc[df_maand["temperatuur_c"].idxmin()]
+
   col1, col2, col3 = st.columns(3)
-  col1.metric("Klimaatgemiddelde", f"{klimaat_norm:.2f} °C")
+  col1.metric("Jaargemiddelde (Norm)", f"{jaargemiddelde:.2f} °C")
   col2.metric(
-      "Warmste Jaar",
-      f"{df_jaar['temperatuur_c'].max():.2f} °C",
-      delta=f"{df_jaar['temperatuur_c'].max() - klimaat_norm:.2f} °C",
+      f"Warmste Maand ({warmste_maand_row['maand_naam']})",
+      f"{warmste_maand_row['temperatuur_c']:.2f} °C",
   )
   col3.metric(
-      "Koudste Jaar",
-      f"{df_jaar['temperatuur_c'].min():.2f} °C",
-      delta=f"{df_jaar['temperatuur_c'].min() - klimaat_norm:.2f} °C",
+      f"Koudste Maand ({koudste_maand_row['maand_naam']})",
+      f"{koudste_maand_row['temperatuur_c']:.2f} °C",
   )
 
-  # Grafiek
+  # --- GRAFIEK PER MAAND ---
   fig = px.line(
-      df_jaar,
-      x="jaar",
+      df_maand,
+      x="maand_naam",
       y="temperatuur_c",
       title=(
-          "Jaarlijkse Gemiddelde Temperatuur"
+          "Gemiddelde Temperatuur per Maand"
           f" ({jaar_bereik[0]}-{jaar_bereik[1]})"
       ),
       markers=True,
-      labels={"temperatuur_c": "Temperatuur (°C)", "jaar": "Jaar"},
+      labels={
+          "temperatuur_c": "Temperatuur (°C)",
+          "maand_naam": "Maand",
+      },
   )
 
+  # Horizontale stippellijn voor het algehele gemiddelde
   fig.add_hline(
-      y=klimaat_norm,
+      y=jaargemiddelde,
       line_dash="dash",
       line_color="red",
-      annotation_text=f"Norm: {klimaat_norm:.2f} °C",
+      annotation_text=f"Jaargemiddelde: {jaargemiddelde:.2f} °C",
+  )
+
+  # Zorg dat de volgorde van de maanden op de X-as klopt
+  fig.update_xaxes(
+      categoryorder="array",
+      categoryarray=list(maand_namen.values()),
   )
 
   st.plotly_chart(fig, use_container_width=True)
 
   # Ruwe dataset inzien
-  with st.expander("📄 Bekijk de ruwe dataset"):
-    st.dataframe(df[["time_clean", "jaar", "maand", "temperatuur_c"]])
+  with st.expander("📄 Bekijk de ruwe dataset per maand"):
+    st.dataframe(df_maand[["maand", "maand_naam", "temperatuur_c"]])
 
 else:
   st.info(
