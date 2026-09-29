@@ -104,7 +104,7 @@ def degrees_to_cardinal(deg):
     return dirs[ix]
 
 
-# 4. Functie om live ERA5 data op te halen (Temperatuur + Wind)
+# 4. Functie om live ERA5 data op te halen (Temperatuur + Wind + Neerslag)
 @st.cache_data(show_spinner="Live ERA5-data ophalen bij Copernicus CDS...")
 def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     c = get_cds_client()
@@ -120,7 +120,8 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         "variable": [
             "2m_temperature",
             "10m_u_component_of_wind",
-            "10m_v_component_of_wind"
+            "10m_v_component_of_wind",
+            "total_precipitation",
         ],
         "year": jaren,
         "month": [f"{m:02d}" for m in range(1, 13)],
@@ -149,17 +150,18 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
 
     if not time_dim:
         st.error(
-            "Kon de tijdsdimensie niet vinden in het CDS bestand. Gevonden"
-            f" variabelen: {list(ds.coords.keys())}"
+            f"Tijdsdimensie niet gevonden in CDS bestand. Aanwezige dimensies: {list(ds.dims.keys())}"
         )
         st.stop()
 
+    # Selecteer dichtstbijzijnde punt en converteer naar DataFrame
     ds_point = ds.sel(latitude=lat, longitude=lon, method="nearest")
     df = ds_point.to_dataframe().reset_index()
 
     df["time_clean"] = pd.to_datetime(df[time_dim])
     df["jaar"] = df["time_clean"].dt.year
     df["maand"] = df["time_clean"].dt.month
+    df["days_in_month"] = df["time_clean"].dt.days_in_month
 
     # Temperatuur verwerken
     t_var = next((v for v in ["t2m", "2m_temperature", "var167"] if v in df.columns), None)
@@ -181,6 +183,25 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         # Meteorologische windrichting (waar de wind VANDAAN komt in graden)
         df["wind_dir_deg"] = (270 - np.arctan2(df[v_var], df[u_var]) * (180 / np.pi)) % 360
         df["wind_dir_cardinal"] = df["wind_dir_deg"].apply(degrees_to_cardinal)
+
+    # Neerslag verwerken (dynamische variabele- en eenheidscontrole)
+    tp_var = next((v for v in ["tp", "total_precipitation", "var228"] if v in df.columns), None)
+
+    if tp_var:
+        units = ds[tp_var].attrs.get("units", "m s**-1")
+
+        if units in ["m s**-1", "m/s", "m s-1"]:
+            # ERA5 Monthly Mean: m/s -> mm per maand
+            # (m/s * 86400 sec/dag * dagen_in_maand * 1000 mm/m)
+            df["neerslag_mm"] = df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
+        elif units in ["m", "meters"]:
+            # Geaccumuleerde meters -> mm
+            df["neerslag_mm"] = df[tp_var] * 1000.0
+        else:
+            # Fallback (standaard uitgaan van flux m/s)
+            df["neerslag_mm"] = df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
+    else:
+        st.warning("⚠️ Neerslagvariabele kon niet automatisch gedetecteerd worden in het CDS-bestand.")
 
     ds.close()
     return df
@@ -306,7 +327,9 @@ if fetch_data or "era5_df" in st.session_state:
     df["maand_naam"] = df["maand"].map(maand_namen)
 
     # Tabs voor de Klimaatstudie
-    tab_temp, tab_wind = st.tabs(["🌡️ Temperatuur Studie", "💨 Wind Studie"])
+    tab_temp, tab_wind, tab_precip = st.tabs([
+        "🌡️ Temperatuur Studie", "💨 Wind Studie", "🌧️️ Neerslag Studie"
+    ])
 
     # --- TAB 1: TEMPERATUUR ---
     with tab_temp:
@@ -506,6 +529,100 @@ if fetch_data or "era5_df" in st.session_state:
         )
 
         st.plotly_chart(fig_rose, use_container_width=True)
+
+    # --- TAB 3: NEERSLAG ---
+    with tab_precip:
+        st.subheader("🌧️ ERA5 Totale Neerslag Klimatologie")
+
+        if "neerslag_mm" not in df.columns:
+            st.warning(
+                "⚠️ `neerslag_mm` niet gevonden in de gecachte data. "
+                "Wis de cache rechtsboven via het Streamlit menu (**Clear cache**) en klik daarna opnieuw op **'🚀 Haal ERA5 Data Op'**."
+            )
+        else:
+            with st.expander("🔍 Bekijk controle/debug data van neerslag"):
+                st.dataframe(df[["jaar", "maand", "neerslag_mm"]].head(12))
+
+            # Statistieken berekenen per maand
+            df_stats_p = (
+                df.groupby(["maand", "maand_naam"])["neerslag_mm"]
+                .agg(
+                    gemiddelde="mean",
+                    p50="median",
+                    p90=lambda x: np.percentile(x, 90),
+                    max_precip="max",
+                )
+                .reset_index()
+            )
+
+            jaartotaal_gem = df.groupby("jaar")["neerslag_mm"].sum().mean()
+            natste_maand_row = df_stats_p.loc[df_stats_p["gemiddelde"].idxmax()]
+            droogste_maand_row = df_stats_p.loc[df_stats_p["gemiddelde"].idxmin()]
+
+            p_col1, p_col2, p_col3 = st.columns(3)
+            p_col1.metric("Gem. Jaarlijkse Neerslag", f"{jaartotaal_gem:.1f} mm")
+            p_col2.metric(
+                f"Natste Maand ({natste_maand_row['maand_naam']})",
+                f"{natste_maand_row['gemiddelde']:.1f} mm",
+                f"P90: {natste_maand_row['p90']:.1f} mm",
+            )
+            p_col3.metric(
+                f"Droogste Maand ({droogste_maand_row['maand_naam']})",
+                f"{droogste_maand_row['gemiddelde']:.1f} mm",
+                f"P50: {droogste_maand_row['p50']:.1f} mm",
+            )
+
+            # Grafiek Neerslagsommen Boxplot met P50, P90 en Gemiddelde
+            fig_p = go.Figure()
+
+            fig_p.add_trace(
+                go.Box(
+                    x=df["maand_naam"],
+                    y=df["neerslag_mm"],
+                    name="Spreiding (P50 Mediaan)",
+                    boxpoints=False,
+                    fillcolor="rgba(52, 152, 219, 0.3)",
+                    line=dict(color="#2980b9", width=2),
+                    whiskerwidth=0.8,
+                )
+            )
+
+            fig_p.add_trace(
+                go.Scatter(
+                    x=df_stats_p["maand_naam"],
+                    y=df_stats_p["p90"],
+                    mode="markers+lines",
+                    name="90e Percentiel (P90)",
+                    marker=dict(size=8, color="#e67e22", symbol="triangle-up"),
+                    line=dict(color="#e67e22", width=2, dash="dash"),
+                )
+            )
+
+            fig_p.add_trace(
+                go.Scatter(
+                    x=df_stats_p["maand_naam"],
+                    y=df_stats_p["gemiddelde"],
+                    mode="markers+lines",
+                    name="Gemiddelde (◆)",
+                    marker=dict(size=10, color="navy", symbol="diamond"),
+                    line=dict(color="navy", width=1.5, dash="dot"),
+                )
+            )
+
+            fig_p.update_layout(
+                title=(
+                    "Maandelijkse Neerslagsommen (mm) & Extremen"
+                    f" ({jaar_bereik[0]}-{jaar_bereik[1]})"
+                ),
+                yaxis_title="Neerslag (mm/maand)",
+                xaxis_title="Maand",
+                xaxis=dict(
+                    categoryorder="array",
+                    categoryarray=list(maand_namen.values()),
+                ),
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_p, use_container_width=True)
 
 else:
     st.info(
