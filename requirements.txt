@@ -5,8 +5,8 @@ plotly
 cdsapi
 xarray
 netcdf4
-python-docx
-geopy
 h5netcdf
 scipy
 cfgrib
+python-docx
+geopy
