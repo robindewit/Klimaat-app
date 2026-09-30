@@ -18,7 +18,7 @@ st.set_page_config(
 
 st.title("🌤️ ERA5 Klimaatstatistieken per Locatie")
 st.markdown("""
-Bekijk klimaatdata en maandelijkse verdelingen (met 50% en 90% percentielen) voor een **specifieke locatie** op basis van ERA5 reanalyse.
+Bekijk klimaatdata en maandelijkse verdelingen (met maandgemiddelden, 50% en 90% percentielen) voor een **specifieke locatie** op basis van ERA5 reanalyse.
 """)
 
 # --- SESSIE STATUS EN LOCATIE ZOEKEN ---
@@ -135,7 +135,7 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
     if t_var:
         df["temp_c"] = df[t_var] - 273.15 if df[t_var].mean() > 200 else df[t_var]
 
-    # Vochtigheid (%) & Dp
+    # Vochtigheid (%) & Dewpoint
     d_var = next((cols_lower[c] for c in ["d2m", "2m_dewpoint_temperature"] if c in cols_lower), None)
     if d_var and t_var:
         df["dew_c"] = df[d_var] - 273.15 if df[d_var].mean() > 200 else df[d_var]
@@ -163,12 +163,19 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
 
     return df
 
-# --- FUNCTIE VOOR MAANDELIJKSE PERCENTIEL BOXPLOT ---
+# --- FUNCTIE VOOR PER-MAAND PERCENTIEL BOXPLOT MET GEMIDDELDE ---
 def create_monthly_percentile_boxplot(df, var_col, title, y_label, color_hex="#1f77b4"):
-    fig = go.Figure()
+    df_plot = df.copy()
+    df_plot["maand_naam"] = pd.Categorical(df_plot["maand_naam"], categories=MAAND_NAMEN, ordered=True)
     
-    for month_nr, month_name in enumerate(MAAND_NAMEN, 1):
-        month_data = df[df["maand_nr"] == month_nr][var_col].dropna()
+    # Gemiddelde per maand berekenen voor de rode lijn
+    df_avg = df_plot.groupby("maand_naam", observed=False)[var_col].mean().reset_index()
+
+    fig = go.Figure()
+
+    # Boxplot per maand toevoegen op de X-as
+    for month_name in MAAND_NAMEN:
+        month_data = df_plot[df_plot["maand_naam"] == month_name][var_col].dropna()
         if len(month_data) == 0:
             continue
             
@@ -179,29 +186,41 @@ def create_monthly_percentile_boxplot(df, var_col, title, y_label, color_hex="#1
         p90 = np.percentile(month_data, 90)
         
         fig.add_trace(go.Box(
-            name=month_name,
+            x=[month_name],
             q1=[p25],
             median=[p50],
             q3=[p75],
             lowerfence=[p10],
             upperfence=[p90],
             marker_color=color_hex,
+            name=month_name,
             showlegend=False,
             hovertemplate=(
                 f"<b>{month_name}</b><br>" +
                 "90% Percentiel (P90): %{upperfence:.2f}<br>" +
                 "75% Percentiel (P75): %{q3:.2f}<br>" +
-                "<b>50% Percentiel (Mediaan/P50): %{median:.2f}</b><br>" +
+                "<b>50% Percentiel (Mediaan): %{median:.2f}</b><br>" +
                 "25% Percentiel (P25): %{q1:.2f}<br>" +
                 "10% Percentiel (P10): %{lowerfence:.2f}<extra></extra>"
             )
         ))
-        
+
+    # Rode stippellijn voor het Maandgemiddelde
+    fig.add_trace(go.Scatter(
+        x=df_avg["maand_naam"],
+        y=df_avg[var_col],
+        mode="lines+markers",
+        name="Gemiddelde",
+        line=dict(color="red", width=2, dash="dash"),
+        hovertemplate="Gemiddelde %{x}: <b>%{y:.2f}</b><extra></extra>"
+    ))
+
     fig.update_layout(
         title=title,
-        xaxis=dict(title="Maand", categoryorder="array", categoryarray=MAAND_NAMEN),
+        xaxis=dict(title="Maand", type="category"),
         yaxis_title=y_label,
         height=450,
+        showlegend=True,
         margin=dict(l=40, r=40, t=50, b=40)
     )
     return fig
@@ -224,13 +243,13 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
 
                 # --- TAB 1: GRAFIEKEN ONDER ELKAAR ---
                 with tab_grafieken:
-                    st.info("💡 **Uitleg Boxplot**: Op de X-as staan de maanden Jan t/m Dec. De middelste streep in de box is de **50% persentiel (mediaan)**. De bovenste en onderste snorharen geven exact de **90% en 10% persentielen** aan over de gekozen reeks van jaren.")
+                    st.info("💡 **Uitleg Grafieken**: Op de X-as staan de 12 afzonderlijke maanden. De gekleurde balken tonen de verdeling per maand (**10%**, **25%**, **50%/mediaan**, **75%** en **90% percentielen** over alle jaren). De **rode onderbroken lijn** geeft het gemiddelde aan per maand.")
 
                     # 1. Temperatuur
                     if "temp_c" in df.columns:
                         fig_temp = create_monthly_percentile_boxplot(
                             df, "temp_c", 
-                            "2m Temperatuur (°C) - Maandelijkse Verdeling", 
+                            "2m Temperatuur (°C) - Maandelijkse Verdeling & Gemiddelde", 
                             "Temperatuur (°C)", 
                             "#EF553B"
                         )
@@ -241,7 +260,7 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                     if "rh_pct" in df.columns:
                         fig_rh = create_monthly_percentile_boxplot(
                             df, "rh_pct", 
-                            "Relatieve Vochtigheid (%) - Maandelijkse Verdeling", 
+                            "Relatieve Vochtigheid (%) - Maandelijkse Verdeling & Gemiddelde", 
                             "Vochtigheid (%)", 
                             "#00CC96"
                         )
@@ -252,7 +271,7 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                     if "wind_speed_ms" in df.columns:
                         fig_wind = create_monthly_percentile_boxplot(
                             df, "wind_speed_ms", 
-                            "Windsnelheid (m/s) - Maandelijkse Verdeling", 
+                            "Windsnelheid (m/s) - Maandelijkse Verdeling & Gemiddelde", 
                             "Windsnelheid (m/s)", 
                             "#2CA02C"
                         )
@@ -276,7 +295,7 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                     if "mslp_hpa" in df.columns:
                         fig_msl = create_monthly_percentile_boxplot(
                             df, "mslp_hpa", 
-                            "Luchtdruk op Zeeniveau (hPa) - Maandelijkse Verdeling", 
+                            "Luchtdruk op Zeeniveau (hPa) - Maandelijkse Verdeling & Gemiddelde", 
                             "Luchtdruk (hPa)", 
                             "#AB63FA"
                         )
@@ -287,7 +306,7 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                     if "tcc_pct" in df.columns:
                         fig_tcc = create_monthly_percentile_boxplot(
                             df, "tcc_pct", 
-                            "Totale Bewolkingsgraad (%) - Maandelijkse Verdeling", 
+                            "Totale Bewolkingsgraad (%) - Maandelijkse Verdeling & Gemiddelde", 
                             "Bewolking (%)", 
                             "#FFA15A"
                         )
