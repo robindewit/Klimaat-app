@@ -55,7 +55,7 @@ eind_jaar = st.sidebar.number_input("Eindjaar", min_value=1950, max_value=2025, 
 st.sidebar.header("⚙️ 3. Instellingen")
 wind_eenheid = st.sidebar.selectbox(
     "Windsnelheid Eenheid:",
-    ["m/s", "kt", "Bft"]
+    ["m/s", "kt", "km/h", "Bft"]
 )
 
 # --- HELPERS EN CDS CLIENT ---
@@ -88,6 +88,9 @@ def degrees_to_cardinal(deg):
     return WIND_RICHTINGEN[ix % 16]
 
 def ms_to_beaufort(ms):
+    """
+    Officiële WMO/KNMI schaal van Beaufort gebaseerd op m/s.
+    """
     if pd.isna(ms): return np.nan
     boundaries = [0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7]
     for bft, boundary in enumerate(boundaries):
@@ -115,8 +118,9 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
         "variable": [
             "2m_temperature",
             "2m_dewpoint_temperature",
-            "10m_u_component_of_wind",
-            "10m_v_component_of_wind",
+            "10m_wind_speed",           # Scalaire windsnelheid (voorkomt uitmiddelen u/v vector)
+            "10m_u_component_of_wind",  # U-vector voor windrichting
+            "10m_v_component_of_wind",  # V-vector voor windrichting
             "mean_sea_level_pressure",
             "total_cloud_cover"
         ],
@@ -158,13 +162,23 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
                               np.exp((17.625 * df["temp_c"]) / (243.04 + df["temp_c"])))
         df["rh_pct"] = df["rh_pct"].clip(0, 100)
 
-    # Wind
+    # Wind (Scalaire windsnelheid & richting)
+    si10_var = next((cols_lower[c] for c in ["si10", "10m_wind_speed", "ws10"] if c in cols_lower), None)
     u_var = next((cols_lower[c] for c in ["u10", "10m_u_component_of_wind"] if c in cols_lower), None)
     v_var = next((cols_lower[c] for c in ["v10", "10m_v_component_of_wind"] if c in cols_lower), None)
-    if u_var and v_var:
+
+    if si10_var:
+        df["wind_speed_ms"] = df[si10_var]
+    elif u_var and v_var:
+        # Fallback als si10 niet in de dataset zit
         df["wind_speed_ms"] = np.sqrt(df[u_var] ** 2 + df[v_var] ** 2)
+
+    if "wind_speed_ms" in df.columns:
         df["wind_speed_kt"] = df["wind_speed_ms"] * 1.943844
+        df["wind_speed_kmh"] = df["wind_speed_ms"] * 3.6
         df["wind_speed_bft"] = df["wind_speed_ms"].apply(ms_to_beaufort)
+
+    if u_var and v_var:
         df["wind_dir_deg"] = (270 - np.arctan2(df[v_var], df[u_var]) * (180 / np.pi)) % 360
         df["wind_dir_cardinal"] = df["wind_dir_deg"].apply(degrees_to_cardinal)
 
@@ -239,7 +253,7 @@ def create_monthly_percentile_boxplot(df, var_col, title, y_label, color_hex="#1
     )
     return fig
 
-# --- FUNCTIE VOOR WINDROOS MET WINDSSNELHEIDSKLASSEN ---
+# --- FUNCTIE VOOR WINDROOS MET WINDSNELHEIDSKLASSEN ---
 def create_wind_rose(df, wind_col, wind_unit):
     df_rose = df.dropna(subset=[wind_col, "wind_dir_cardinal"]).copy()
     
@@ -247,6 +261,9 @@ def create_wind_rose(df, wind_col, wind_unit):
     if wind_unit == "kt":
         bins = [0, 4, 10, 16, 22, 28, np.inf]
         labels = ["< 4 kt", "4-10 kt", "10-16 kt", "16-22 kt", "22-28 kt", "> 28 kt"]
+    elif wind_unit == "km/h":
+        bins = [0, 10, 20, 30, 40, 50, np.inf]
+        labels = ["< 10 km/h", "10-20 km/h", "20-30 km/h", "30-40 km/h", "40-50 km/h", "> 50 km/h"]
     elif wind_unit == "Bft":
         bins = [-0.5, 1.5, 3.5, 5.5, 7.5, 9.5, 12.5]
         labels = ["0-1 Bft", "2-3 Bft", "4-5 Bft", "6-7 Bft", "8-9 Bft", ">= 10 Bft"]
@@ -305,6 +322,9 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                 if wind_eenheid == "kt":
                     wind_col = "wind_speed_kt"
                     wind_label = "Windsnelheid (kt)"
+                elif wind_eenheid == "km/h":
+                    wind_col = "wind_speed_kmh"
+                    wind_label = "Windsnelheid (km/h)"
                 elif wind_eenheid == "Bft":
                     wind_col = "wind_speed_bft"
                     wind_label = "Windsnelheid (Bft)"
