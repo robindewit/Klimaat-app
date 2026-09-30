@@ -73,68 +73,96 @@ def degrees_to_cardinal(deg):
 
 MAAND_NAMEN = ["Jan", "Feb", "Mrt", "Apr", "Mei", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"]
 
-# --- OPHALEN EN VERWERKEN ERA5 DATA ---
-@st.cache_data(show_spinner="Klimaatdata ophalen bij Copernicus CDS...")
+# --- OPHALEN EN VERWERKEN ERA5 DATA IN GEBATCHTE VERZOEKEN ---
+@st.cache_data(show_spinner="Klimaatdata stapsgewijs ophalen bij Copernicus CDS...")
 def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     c = get_cds_client()
-    jaren = [str(y) for y in range(start_jaar, eind_jaar + 1)]
-
     temp_dir = tempfile.gettempdir()
-    download_path = os.path.join(temp_dir, f"era5_klimaat_{lat}_{lon}_{start_jaar}_{eind_jaar}.nc")
 
-    # Uitgebreide variabelenlijst
-    variables = [
-        "2m_temperature",
-        "2m_dewpoint_temperature",
-        "10m_u_component_of_wind",
-        "10m_v_component_of_wind",
-        "10m_wind_gust_since_previous_post_processing",
-        "mean_sea_level_pressure",
-        "total_cloud_cover",
-        "surface_solar_radiation_downwards",
-        "sunshine_duration",
-        "snow_depth",
-        "snowfall",
-        "volumetric_soil_water_layer_1",
-        "evaporation",
-        "total_precipitation"
-    ]
-
-    request = {
-        "product_type": "monthly_averaged_reanalysis",
-        "variable": variables,
-        "year": jaren,
-        "month": [f"{m:02d}" for m in range(1, 13)],
-        "time": "00:00",
-        "area": [
-            round(lat + 0.25, 2),
-            round(lon - 0.25, 2),
-            round(lat - 0.25, 2),
-            round(lon + 0.25, 2),
-        ],
-        "format": "netcdf",
+    # Variabelen opgesplitst in logische groepen om CDS-limiet (403 error) te voorkomen
+    var_groups = {
+        "thermo": ["2m_temperature", "2m_dewpoint_temperature"],
+        "wind": ["10m_u_component_of_wind", "10m_v_component_of_wind", "10m_wind_gust_since_previous_post_processing"],
+        "atmos": ["mean_sea_level_pressure", "total_cloud_cover"],
+        "solar": ["surface_solar_radiation_downwards", "sunshine_duration"],
+        "soil_snow": ["snow_depth", "snowfall", "volumetric_soil_water_layer_1", "evaporation"]
     }
 
-    if os.path.exists(download_path):
-        os.remove(download_path)
+    # Bepaal jaarblokken van max 10 jaar
+    year_chunks = []
+    curr_yr = start_jaar
+    while curr_yr <= eind_jaar:
+        next_yr = min(curr_yr + 9, eind_jaar)
+        year_chunks.append([str(y) for y in range(curr_yr, next_yr + 1)])
+        curr_yr = next_yr + 1
 
-    c.retrieve("reanalysis-era5-single-levels-monthly-means", request, download_path)
+    all_dfs = []
 
-    file_to_open = download_path
-    if zipfile.is_zipfile(download_path):
-        with zipfile.ZipFile(download_path, 'r') as zip_ref:
-            extracted_files = zip_ref.namelist()
-            target_file = [f for f in extracted_files if f.endswith(('.nc', '.nc4', '.grib'))][0]
-            file_to_open = zip_ref.extract(target_file, path=temp_dir)
+    progress_bar = st.progress(0, text="Bezig met ophalen van datablokken...")
+    total_steps = len(var_groups) * len(year_chunks)
+    step_count = 0
 
-    ds = xr.open_dataset(file_to_open)
+    for group_name, vars_in_group in var_groups.items():
+        group_dfs = []
+        for yrs in year_chunks:
+            step_count += 1
+            progress_bar.progress(
+                step_count / total_steps, 
+                text=f"Ophalen: {group_name} ({yrs[0]}-{yrs[-1]})..."
+            )
 
-    lat_name = "latitude" if "latitude" in ds.coords else "lat"
-    lon_name = "longitude" if "longitude" in ds.coords else "lon"
-    ds_point = ds.sel({lat_name: lat, lon_name: lon}, method="nearest")
-    df = ds_point.to_dataframe().reset_index()
+            download_path = os.path.join(
+                temp_dir, f"era5_{group_name}_{lat}_{lon}_{yrs[0]}_{yrs[-1]}.nc"
+            )
 
-    time_dim = next((t for t in ["valid_time", "time", "date"] if t in df.columns), None)
+            request = {
+                "product_type": "monthly_averaged_reanalysis",
+                "variable": vars_in_group,
+                "year": yrs,
+                "month": [f"{m:02d}" for m in range(1, 13)],
+                "time": "00:00",
+                "area": [
+                    round(lat + 0.25, 2),
+                    round(lon - 0.25, 2),
+                    round(lat - 0.25, 2),
+                    round(lon + 0.25, 2),
+                ],
+                "format": "netcdf",
+            }
+
+            if not os.path.exists(download_path):
+                c.retrieve("reanalysis-era5-single-levels-monthly-means", request, download_path)
+
+            file_to_open = download_path
+            if zipfile.is_zipfile(download_path):
+                with zipfile.ZipFile(download_path, 'r') as zip_ref:
+                    extracted_files = zip_ref.namelist()
+                    target_file = [f for f in extracted_files if f.endswith(('.nc', '.nc4', '.grib'))][0]
+                    file_to_open = zip_ref.extract(target_file, path=temp_dir)
+
+            ds = xr.open_dataset(file_to_open)
+            lat_name = "latitude" if "latitude" in ds.coords else "lat"
+            lon_name = "longitude" if "longitude" in ds.coords else "lon"
+            ds_point = ds.sel({lat_name: lat, lon_name: lon}, method="nearest")
+
+            df_chunk = ds_point.to_dataframe().reset_index()
+            ds.close()
+            group_dfs.append(df_chunk)
+
+        # Voeg jaarchunks samen binnen 1 variabelengroep
+        df_group = pd.concat(group_dfs, ignore_index=True)
+        time_dim = next((t for t in ["valid_time", "time", "date"] if t in df_group.columns), None)
+        df_group = df_group.set_index(time_dim)
+        
+        # Verwijder dubbele kolomnamen voor het mergen
+        cols_to_keep = [c for c in df_group.columns if c not in [lat_name, lon_name, 'number', 'expver']]
+        all_dfs.append(df_group[cols_to_keep])
+
+    progress_bar.empty()
+
+    # Merge alle variabelengroepen op basis van de tijdsindex
+    df = pd.concat(all_dfs, axis=1).reset_index()
+    time_dim = df.columns[0]
     df["time_clean"] = pd.to_datetime(df[time_dim])
     df["maand"] = df["time_clean"].dt.month
     df["days_in_month"] = df["time_clean"].dt.days_in_month
@@ -147,9 +175,8 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
 
     if t_var:
         df["temp_c"] = df[t_var] - 273.15 if df[t_var].mean() > 200 else df[t_var]
-    if d_var:
+    if d_var and t_var:
         df["dew_c"] = df[d_var] - 273.15 if df[d_var].mean() > 200 else df[d_var]
-        # Relatieve Vochtigheid (Magnus formule benadering)
         df["rh_pct"] = 100 * (np.exp((17.625 * df["dew_c"]) / (243.04 + df["dew_c"])) / 
                               np.exp((17.625 * df["temp_c"]) / (243.04 + df["temp_c"])))
         df["rh_pct"] = df["rh_pct"].clip(0, 100)
@@ -181,9 +208,9 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     ssrd_var = next((cols_lower[c] for c in ["ssrd", "surface_solar_radiation_downwards"] if c in cols_lower), None)
     sund_var = next((cols_lower[c] for c in ["sund", "sunshine_duration"] if c in cols_lower), None)
     if ssrd_var:
-        df["ssrd_mj"] = df[ssrd_var] / 1e6 # J/m² naar MJ/m²
+        df["ssrd_mj"] = df[ssrd_var] / 1e6
     if sund_var:
-        df["sunshine_hrs"] = df[sund_var] / 3600.0 # seconden naar uur
+        df["sunshine_hrs"] = df[sund_var] / 3600.0
 
     # 6. Sneeuw & Bodemvocht
     sd_var = next((cols_lower[c] for c in ["sd", "snow_depth"] if c in cols_lower), None)
@@ -197,12 +224,6 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     if swv_var:
         df["soil_water_pct"] = df[swv_var] * 100.0
 
-    # 7. Verdamping / Neerslagtekort
-    e_var = next((cols_lower[c] for c in ["e", "evaporation"] if c in cols_lower), None)
-    if e_var:
-        df["evap_mm"] = np.abs(df[e_var]) * 1000.0 * df["days_in_month"]
-
-    ds.close()
     return df
 
 # --- MAIN INTERFACE ---
@@ -316,7 +337,7 @@ if st.session_state.run_fetch:
             col1, col2 = st.columns(2)
             with col1:
                 if "mslp_hpa" in df.columns:
-                    st.plotly_chart(plot_percentile_chart(df, "mslp_hpa", "Zeenniveau Luchtdruk (MSLP)", "Luchtdruk (hPa)", "#AB63FA"), use_container_width=True)
+                    st.plotly_chart(plot_percentile_chart(df, "mslp_hpa", "Zeeniveau Luchtdruk (MSLP)", "Luchtdruk (hPa)", "#AB63FA"), use_container_width=True)
             with col2:
                 if "tcc_pct" in df.columns:
                     st.plotly_chart(plot_percentile_chart(df, "tcc_pct", "Totale Bewolkingsgraad (TCC)", "Bewolking (%)", "#FFA15A"), use_container_width=True)
