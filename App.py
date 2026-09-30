@@ -127,8 +127,6 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
     df["time_clean"] = pd.to_datetime(df[time_col])
     df["maand_nr"] = df["time_clean"].dt.month
     df["maand_naam"] = df["maand_nr"].apply(lambda m: MAAND_NAMEN[m-1])
-    # Zorg dat de maanden chronologisch geordend blijven in Plotly
-    df["maand_naam"] = pd.Categorical(df["maand_naam"], categories=MAAND_NAMEN, ordered=True)
 
     cols_lower = {str(c).lower(): c for c in df.columns}
 
@@ -165,12 +163,13 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
 
     return df
 
-# --- FUNCTIE VOOR CUSTOM PERCENTIEL BOXPLOT ---
-def create_percentile_boxplot(df, var_col, title, y_label, color_hex="#1f77b4"):
+# --- FUNCTIE VOOR MAANDELIJKSE PERCENTIEL BOXPLOT ---
+def create_monthly_percentile_boxplot(df, var_col, title, y_label, color_hex="#1f77b4"):
     """
-    Maakt een Boxplot per maand waarin:
-    - De box de Mediaan (P50) en de P25-P75 range weergeeft
-    - De whiskers (snorharen) exact de P10 (10%) en P90 (90%) percentielen aangeven
+    Genereert een grafiek met 12 boxplots op de X-as (Jan t/m Dec).
+    Elke boxplot gebruikt alle data van die specifieke maand over alle gekozen jaren.
+    - Mediaan = 50% persentiel
+    - Onderste/bovenste whisker = 10% en 90% persentiel
     """
     fig = go.Figure()
     
@@ -206,8 +205,8 @@ def create_percentile_boxplot(df, var_col, title, y_label, color_hex="#1f77b4"):
         
     fig.update_layout(
         title=title,
+        xaxis=dict(title="Maand", categoryorder="array", categoryarray=MAAND_NAMEN),
         yaxis_title=y_label,
-        xaxis_title="Maand",
         height=450,
         margin=dict(l=40, r=40, t=50, b=40)
     )
@@ -231,23 +230,38 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
 
                 # --- TAB 1: GRAFIEKEN ONDER ELKAAR ---
                 with tab_grafieken:
-                    st.info("💡 **Boxplot uitleg**: De dikke streep in de box is de **50% persentiel (mediaan)**. De bovenste en onderste snorharen geven exact de **90% en 10% persentielen** aan.")
+                    st.info("💡 **Uitleg Boxplot**: Op de X-as staan de maanden Jan t/m Dec. De middelste streep in de box is de **50% persentiel (mediaan)**. De bovenste en onderste snorharen geven exact de **90% en 10% persentielen** aan over de gekozen reeks van jaren.")
 
                     # 1. Temperatuur
                     if "temp_c" in df.columns:
-                        fig_temp = create_percentile_boxplot(df, "temp_c", "2m Temperatuur (°C) per Maand", "Temperatuur (°C)", "#EF553B")
+                        fig_temp = create_monthly_percentile_boxplot(
+                            df, "temp_c", 
+                            "2m Temperatuur (°C) - Maandelijkse Verdeling", 
+                            "Temperatuur (°C)", 
+                            "#EF553B"
+                        )
                         st.plotly_chart(fig_temp, use_container_width=True)
                         st.divider()
 
                     # 2. Relatieve Vochtigheid
                     if "rh_pct" in df.columns:
-                        fig_rh = create_percentile_boxplot(df, "rh_pct", "Relatieve Vochtigheid (%) per Maand", "Vochtigheid (%)", "#00CC96")
+                        fig_rh = create_monthly_percentile_boxplot(
+                            df, "rh_pct", 
+                            "Relatieve Vochtigheid (%) - Maandelijkse Verdeling", 
+                            "Vochtigheid (%)", 
+                            "#00CC96"
+                        )
                         st.plotly_chart(fig_rh, use_container_width=True)
                         st.divider()
 
                     # 3. Windsnelheid
                     if "wind_speed_ms" in df.columns:
-                        fig_wind = create_percentile_boxplot(df, "wind_speed_ms", "Windsnelheid (m/s) per Maand", "Windsnelheid (m/s)", "#2CA02C")
+                        fig_wind = create_monthly_percentile_boxplot(
+                            df, "wind_speed_ms", 
+                            "Windsnelheid (m/s) - Maandelijkse Verdeling", 
+                            "Windsnelheid (m/s)", 
+                            "#2CA02C"
+                        )
                         st.plotly_chart(fig_wind, use_container_width=True)
                         st.divider()
 
@@ -266,20 +280,30 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
 
                     # 5. Luchtdruk
                     if "mslp_hpa" in df.columns:
-                        fig_msl = create_percentile_boxplot(df, "mslp_hpa", "Luchtdruk op Zeeniveau (hPa) per Maand", "Luchtdruk (hPa)", "#AB63FA")
+                        fig_msl = create_monthly_percentile_boxplot(
+                            df, "mslp_hpa", 
+                            "Luchtdruk op Zeeniveau (hPa) - Maandelijkse Verdeling", 
+                            "Luchtdruk (hPa)", 
+                            "#AB63FA"
+                        )
                         st.plotly_chart(fig_msl, use_container_width=True)
                         st.divider()
 
                     # 6. Bewolkingsgraad
                     if "tcc_pct" in df.columns:
-                        fig_tcc = create_percentile_boxplot(df, "tcc_pct", "Totale Bewolkingsgraad (%) per Maand", "Bewolking (%)", "#FFA15A")
+                        fig_tcc = create_monthly_percentile_boxplot(
+                            df, "tcc_pct", 
+                            "Totale Bewolkingsgraad (%) - Maandelijkse Verdeling", 
+                            "Bewolking (%)", 
+                            "#FFA15A"
+                        )
                         st.plotly_chart(fig_tcc, use_container_width=True)
 
                 # --- TAB 2: RUWE DATA ---
                 with tab_data:
                     st.subheader("📋 Ruwe Data Overzicht")
                     
-                    display_cols = [c for c in ["time_clean", "temp_c", "rh_pct", "wind_speed_ms", "wind_dir_cardinal", "mslp_hpa", "tcc_pct"] if c in df.columns]
+                    display_cols = [c for c in ["time_clean", "maand_naam", "temp_c", "rh_pct", "wind_speed_ms", "wind_dir_cardinal", "mslp_hpa", "tcc_pct"] if c in df.columns]
                     st.dataframe(df[display_cols], use_container_width=True)
                     
                     # CSV Download Knop
