@@ -1,5 +1,6 @@
 import os
 import tempfile
+import zipfile
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -18,7 +19,7 @@ st.set_page_config(
 
 # --- INSTELLINGEN & HELPERS ---
 def get_cds_client():
-    """Initialiseert de CDS API client via Streamlit Secrets (flexibel)."""
+    """Initialiseert de CDS API client via Streamlit Secrets."""
     url = None
     key = None
 
@@ -32,7 +33,7 @@ def get_cds_client():
     if not url or not key:
         st.error(
             "❌ CDS URL of Key niet gevonden in Secrets. "
-            "Controleer of 'url' en 'key' goed zijn opgeslagen onder Settings -> Secrets."
+            "Controleer 'url' en 'key' onder Settings -> Secrets."
         )
         st.stop()
 
@@ -81,8 +82,8 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     jaren = [str(y) for y in range(start_jaar, eind_jaar + 1)]
 
     temp_dir = tempfile.gettempdir()
-    output_path = os.path.join(
-        temp_dir, f"era5_full_{lat}_{lon}_{start_jaar}_{eind_jaar}.nc"
+    download_path = os.path.join(
+        temp_dir, f"era5_raw_{lat}_{lon}_{start_jaar}_{eind_jaar}.nc"
     )
 
     request = {
@@ -105,43 +106,51 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         "format": "netcdf",
     }
 
-    if os.path.exists(output_path):
-        os.remove(output_path)
+    if os.path.exists(download_path):
+        os.remove(download_path)
 
     c.retrieve(
-        "reanalysis-era5-single-levels-monthly-means", request, output_path
+        "reanalysis-era5-single-levels-monthly-means", request, download_path
     )
 
-    # --- GEUPDATE VALIDATIE VAN HET GEDOWNLOADDE BESTAND ---
-    with open(output_path, "rb") as f:
+    # 1. Controleer op eventuele CDS-foutmeldingen in platte tekst
+    with open(download_path, "rb") as f:
         header = f.read(100)
 
-    # Controleer of het bestand start met bekende binaire headers (CDF, HDF/NetCDF, PK/ZIP, GRIB)
-    valid_headers = (b"CDF", b"\x89HDF", b"PK", b"GRIB")
-    is_valid_binary = any(header.startswith(h) or h in header for h in valid_headers)
-
-    if not is_valid_binary:
-        with open(output_path, "r", encoding="utf-8", errors="ignore") as f:
+    if b"CDF" not in header and b"HDF" not in header and b"PK" not in header and b"GRIB" not in header:
+        with open(download_path, "r", encoding="utf-8", errors="ignore") as f:
             error_content = f.read()
-        st.error("⚠️ CDS heeft geen geldig databestand teruggegeven. Foutmelding van CDS:")
+        st.error("⚠️ CDS retourneerde een tekstbestand in plaats van data. Foutmelding:")
         st.code(error_content)
         st.stop()
 
-    # Openen met xarray via verschillende mogelijke engines
+    # 2. Afhandeling van eventueel ingepakte ZIP-bestanden
+    file_to_open = download_path
+    if zipfile.is_zipfile(download_path):
+        with zipfile.ZipFile(download_path, 'r') as zip_ref:
+            extracted_files = zip_ref.namelist()
+            # Pak het eerste databestand uit
+            target_file = [f for f in extracted_files if f.endswith(('.nc', '.nc4', '.grib'))][0]
+            file_to_open = zip_ref.extract(target_file, path=temp_dir)
+
+    # 3. Openen met xarray via fallback-engines
     ds = None
-    engines_to_try = ["netcdf4", "h5netcdf", "scipy"]
-    
-    for eng in engines_to_try:
+    engines = ["netcdf4", "h5netcdf", "scipy", "cfgrib"]
+    last_error = None
+
+    for eng in engines:
         try:
-            ds = xr.open_dataset(output_path, engine=eng)
+            ds = xr.open_dataset(file_to_open, engine=eng)
             break
-        except Exception:
-            continue
+        except Exception as e:
+            last_error = e
 
     if ds is None:
-        st.error("❌ Het gedownloade NetCDF-bestand kon niet worden gelezen door xarray.")
+        st.error(f"❌ Het gedownloade bestand kon niet worden geopend door xarray.\nDetails: {last_error}")
+        st.info("💡 Tip: Controleer of `netcdf4` en `h5netcdf` correct in je `requirements.txt` staan.")
         st.stop()
 
+    # Determineer tijdsdimensie
     time_dim = None
     for possible_time in ["valid_time", "time", "date", "valid_month"]:
         if possible_time in ds.dims or possible_time in ds.coords:
@@ -149,12 +158,13 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
             break
 
     if not time_dim:
-        st.error(f"Geen tijdsdimensie gevonden. Dimensies: {list(ds.dims.keys())}")
+        st.error(f"Geen tijdsdimensie gevonden. Beschikbare dimensies: {list(ds.dims.keys())}")
         st.stop()
 
     lat_name = "latitude" if "latitude" in ds.coords else "lat"
     lon_name = "longitude" if "longitude" in ds.coords else "lon"
 
+    # Selecteer dichtstbijzijnde rasterpunt
     ds_point = ds.sel({lat_name: lat, lon_name: lon}, method="nearest")
     df = ds_point.to_dataframe().reset_index()
 
@@ -197,7 +207,6 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
 st.title("🌤️ ERA5 Klimaat & Weer Analyse Tool")
 st.markdown("Download en analyseer maandelijkse ERA5 reanalyse-data direct vanaf Copernicus (CDS).")
 
-# Session state voor coördinaten en status
 if "lat" not in st.session_state:
     st.session_state.lat = 52.10
 if "lon" not in st.session_state:
@@ -212,7 +221,7 @@ if st.sidebar.button("Zoek locatie"):
     if zoek_plaats:
         try:
             geolocator = Nominatim(
-                user_agent="era5_streamlit_klimaat_app_v1", 
+                user_agent="era5_streamlit_klimaat_app_v2", 
                 timeout=10
             )
             location = geolocator.geocode(zoek_plaats)
@@ -226,10 +235,7 @@ if st.sidebar.button("Zoek locatie"):
             else:
                 st.sidebar.error("Locatie niet gevonden. Probeer een andere zoekterm.")
         except Exception as e:
-            st.sidebar.error(
-                f"Zoekdienst reageert niet op tijd. Vul eventueel handmatig "
-                f"de coördinaten hieronder in. Fout: {e}"
-            )
+            st.sidebar.error(f"Zoekdienst reageert niet op tijd: {e}")
 
 st.sidebar.markdown("---")
 st.sidebar.header("📅 2. Coördinaten & Periode")
