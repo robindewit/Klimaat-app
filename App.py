@@ -17,11 +17,21 @@ st.set_page_config(
 
 # --- INSTELLINGEN & HELPERS ---
 def get_cds_client():
-    """Initialiseert de CDS API client."""
+    """Initialiseert de CDS API client via Streamlit Secrets of lokaal .cdsapirc bestand."""
     try:
+        # Check eerst of de secrets aanwezig zijn op Streamlit Cloud / lokaal secrets.toml
+        if "cds" in st.secrets:
+            return cdsapi.Client(
+                url=st.secrets["cds"]["url"],
+                key=st.secrets["cds"]["key"]
+            )
+        # Indien geen secrets, valt cdsapi terug op het lokale ~/.cdsapirc bestand
         return cdsapi.Client()
     except Exception as e:
-        st.error("❌ Kan geen verbinding maken met de CDS API. Controleer of je `.cdsapirc` bestand juist ingesteld is.")
+        st.error(
+            "❌ Kan geen verbinding maken met de CDS API. "
+            "Controleer of je Streamlit Secrets ([cds] url/key) of je `.cdsapirc` bestand juist ingesteld zijn."
+        )
         st.stop()
 
 def ms_to_beaufort(ms):
@@ -230,7 +240,10 @@ try:
 
     with tab4:
         st.subheader("Tabelweergave")
-        st.dataframe(df[["time_clean", "temperatuur_c", "neerslag_mm", "wind_speed_ms", "wind_speed_bft", "wind_dir_cardinal"]], use_container_width=True)
+        st.dataframe(
+            df[["time_clean", "temperatuur_c", "neerslag_mm", "wind_speed_ms", "wind_speed_bft", "wind_dir_cardinal"]], 
+            use_container_width=True
+        )
 
 except Exception as e:
     st.info("⚡ Klik in de sidebar op **Data ophalen** of controleer je parameters om te starten.")
