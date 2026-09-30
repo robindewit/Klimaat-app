@@ -195,7 +195,11 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         )
         st.stop()
 
-    ds_point = ds.sel(latitude=lat, longitude=lon, method="nearest")
+    # Detecteer geografische namen (latitude/lat & longitude/lon)
+    lat_name = "latitude" if "latitude" in ds.coords else "lat"
+    lon_name = "longitude" if "longitude" in ds.coords else "lon"
+
+    ds_point = ds.sel({lat_name: lat, lon_name: lon}, method="nearest")
     df = ds_point.to_dataframe().reset_index()
 
     df["time_clean"] = pd.to_datetime(df[time_dim])
