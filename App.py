@@ -1,139 +1,53 @@
 import os
 import tempfile
-import cdsapi
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import requests
 import streamlit as st
 import xarray as xr
+import cdsapi
 
-# 1. Pagina instellingen
+# --- STREAMLIT PAGINA CONFIGURATIE ---
 st.set_page_config(
-    page_title="ERA5 Klimaat Explorer", page_icon="🌍", layout="wide"
+    page_title="ERA5 Klimaat & Weer Viewer",
+    page_icon="🌤️",
+    layout="wide"
 )
 
-st.title("🌍 ERA5 Klimaat Explorer")
-st.markdown(
-    "Analyseer live **ECMWF ERA5** heranalysedata via de Copernicus Climate Data Store (CDS)."
-)
-
-
-# 2. CDS API Client initialiseren
+# --- INSTELLINGEN & HELPERS ---
 def get_cds_client():
-    url = st.secrets.get("CDS_URL", "https://cds.climate.copernicus.eu/api")
-    key = st.secrets.get("CDS_KEY", None)
-    if not key:
-        st.error(
-            "⚠️ Geen CDS_KEY gevonden in Streamlit Secrets! Voeg de sleutel toe via"
-            " de Instellingen van de app."
-        )
-        st.stop()
-    return cdsapi.Client(url=url, key=key)
-
-
-# 3. Geocoding via Open-Meteo API
-def geocode_location(location_name):
-    preset_cities = {
-        "middelburg": (51.4988, 3.6109, "Middelburg, Zeeland, Nederland"),
-        "rotterdam": (51.9244, 4.4777, "Rotterdam, Zuid-Holland, Nederland"),
-        "amsterdam": (52.3676, 4.9041, "Amsterdam, Noord-Holland, Nederland"),
-        "breda": (51.5866, 4.7759, "Breda, Noord-Brabant, Nederland"),
-        "bergen op zoom": (
-            51.4946,
-            4.2872,
-            "Bergen op Zoom, Noord-Brabant, Nederland",
-        ),
-        "dresden": (51.0504, 13.7373, "Dresden, Saksen, Duitsland"),
-        "utrecht": (52.0907, 5.1214, "Utrecht, Nederland"),
-        "eindhoven": (51.4416, 5.4697, "Eindhoven, Noord-Brabant, Nederland"),
-    }
-
-    clean_query = location_name.strip().lower()
-    if clean_query in preset_cities:
-        return preset_cities[clean_query]
-
+    """Initialiseert de CDS API client."""
     try:
-        url = f"https://geocoding-api.open-meteo.com/v1/search?name={requests.utils.quote(location_name)}&count=1&language=nl&format=json"
-        response = requests.get(url, timeout=5)
+        return cdsapi.Client()
+    except Exception as e:
+        st.error("❌ Kan geen verbinding maken met de CDS API. Controleer of je `.cdsapirc` bestand juist ingesteld is.")
+        st.stop()
 
-        if response.status_code == 200:
-            data = response.json()
-            if "results" in data and len(data["results"]) > 0:
-                result = data["results"][0]
-                lat = round(result["latitude"], 4)
-                lon = round(result["longitude"], 4)
-
-                name = result.get("name", location_name)
-                country = result.get("country", "")
-                admin1 = result.get("admin1", "")
-
-                address_parts = [p for p in [name, admin1, country] if p]
-                full_address = ", ".join(address_parts)
-
-                return lat, lon, full_address
-    except Exception:
-        pass
-
-    return None, None, None
-
-
-# Helper functie voor Beaufort conversie
 def ms_to_beaufort(ms):
-    if ms < 0.3:
-        return 0
-    elif ms < 1.6:
-        return 1
-    elif ms < 3.4:
-        return 2
-    elif ms < 5.5:
-        return 3
-    elif ms < 8.0:
-        return 4
-    elif ms < 10.8:
-        return 5
-    elif ms < 13.9:
-        return 6
-    elif ms < 17.2:
-        return 7
-    elif ms < 20.8:
-        return 8
-    elif ms < 24.5:
-        return 9
-    elif ms < 28.5:
-        return 10
-    elif ms < 32.7:
-        return 11
-    else:
-        return 12
+    """Converteert m/s naar Beaufort schaal."""
+    if ms < 0.3: return 0
+    elif ms < 1.6: return 1
+    elif ms < 3.4: return 2
+    elif ms < 5.5: return 3
+    elif ms < 8.0: return 4
+    elif ms < 10.8: return 5
+    elif ms < 13.9: return 6
+    elif ms < 17.2: return 7
+    elif ms < 20.8: return 8
+    elif ms < 24.5: return 9
+    elif ms < 28.5: return 10
+    elif ms < 32.7: return 11
+    else: return 12
 
-
-# Helper functie om graden om te zetten naar windrichting sector (16 windstreken)
 def degrees_to_cardinal(deg):
-    dirs = [
-        "N",
-        "NNO",
-        "NO",
-        "ONO",
-        "O",
-        "OZO",
-        "ZO",
-        "ZZO",
-        "Z",
-        "ZZW",
-        "ZW",
-        "WZW",
-        "W",
-        "WNW",
-        "NW",
-        "NNW",
-    ]
-    ix = int((deg + 11.25) / 22.5) % 16
-    return dirs[ix]
+    """Converteert graden naar windrichting (N, NO, O, etc.)."""
+    dirs = ['N', 'NNO', 'NO', 'ONO', 'O', 'OZO', 'ZO', 'ZZO', 
+            'Z', 'ZZW', 'ZW', 'WZW', 'W', 'WNW', 'NW', 'NNW']
+    ix = int((deg + 11.25) / 22.5)
+    return dirs[ix % 16]
 
-
-# 4. Functie om live ERA5 data op te halen (Temperatuur + Wind + Neerslag)
+# --- ROBUUSTE DOWNLOAD & VERWERKINGSFUNCTIE ---
 @st.cache_data(show_spinner="Live ERA5-data ophalen bij Copernicus CDS...")
 def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     c = get_cds_client()
@@ -144,6 +58,7 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         temp_dir, f"era5_full_{lat}_{lon}_{start_jaar}_{eind_jaar}.nc"
     )
 
+    # CDS Request opbouwen
     request = {
         "product_type": "monthly_averaged_reanalysis",
         "variable": [
@@ -164,21 +79,34 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         "format": "netcdf",
     }
 
+    # Zorg dat eventuele oude/corrupte bestanden eerst worden verwijderd
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
     c.retrieve(
         "reanalysis-era5-single-levels-monthly-means", request, output_path
     )
 
-    # Probeer het NetCDF-bestand te openen met expliciete IO-engine handling
+    # --- VALIDATIE VAN HET GEDOWNLOADDE BESTAND ---
+    with open(output_path, "rb") as f:
+        header = f.read(100)
+
+    # Een geldig NetCDF-3 bestand begint met 'CDF', NetCDF-4/HDF5 met '\x89HDF'
+    if not (header.startswith(b"CDF") or header.startswith(b"\x89HDF")):
+        with open(output_path, "r", encoding="utf-8", errors="ignore") as f:
+            error_content = f.read()
+        st.error("⚠️ CDS heeft geen geldig NetCDF-bestand teruggegeven. Foutmelding van CDS:")
+        st.code(error_content)
+        st.stop()
+
+    # Probeer het NetCDF-bestand te openen met xarray
     try:
         ds = xr.open_dataset(output_path, engine="netcdf4")
-    except Exception:
+    except Exception as e:
         try:
             ds = xr.open_dataset(output_path, engine="h5netcdf")
-        except Exception as e:
-            st.error(
-                f"Kan het gedownloade NetCDF-bestand niet openen: {e}. Zorg ervoor"
-                " dat 'netcdf4' of 'h5netcdf' is geïnstalleerd in requirements.txt."
-            )
+        except Exception as inner_e:
+            st.error(f"Kan het NetCDF-bestand niet lezen: {inner_e}")
             st.stop()
 
     # Tijdsdimensie detecteren
@@ -189,16 +117,14 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
             break
 
     if not time_dim:
-        st.error(
-            "Kon de tijdsdimensie niet vinden in het CDS bestand. Gevonden"
-            f" dimensies: {list(ds.dims.keys())}"
-        )
+        st.error(f"Geen tijdsdimensie gevonden. Dimensies in bestand: {list(ds.dims.keys())}")
         st.stop()
 
-    # Detecteer geografische namen (latitude/lat & longitude/lon)
+    # Detecteer geografische namen
     lat_name = "latitude" if "latitude" in ds.coords else "lat"
     lon_name = "longitude" if "longitude" in ds.coords else "lon"
 
+    # Selecteer dichtstbijzijnde roosterpunt
     ds_point = ds.sel({lat_name: lat, lon_name: lon}, method="nearest")
     df = ds_point.to_dataframe().reset_index()
 
@@ -207,517 +133,104 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     df["maand"] = df["time_clean"].dt.month
     df["days_in_month"] = df["time_clean"].dt.days_in_month
 
-    # Temperatuur verwerken
-    t_var = next(
-        (v for v in ["t2m", "2m_temperature", "var167"] if v in df.columns), None
-    )
+    # 1. Temperatuur verwerken (K -> °C)
+    t_var = next((v for v in ["t2m", "2m_temperature", "var167"] if v in df.columns), None)
     if t_var:
         df["temperatuur_c"] = df[t_var] - 273.15
 
-    # Wind verwerken
-    u_var = next(
-        (v for v in ["u10", "10m_u_component_of_wind", "var165"] if v in df.columns),
-        None,
-    )
-    v_var = next(
-        (v for v in ["v10", "10m_v_component_of_wind", "var166"] if v in df.columns),
-        None,
-    )
+    # 2. Windcomponenten verwerken (u & v -> snelheid + richting)
+    u_var = next((v for v in ["u10", "10m_u_component_of_wind", "var165"] if v in df.columns), None)
+    v_var = next((v for v in ["v10", "10m_v_component_of_wind", "var166"] if v in df.columns), None)
 
     if u_var and v_var:
-        # Windsnelheid m/s
         df["wind_speed_ms"] = np.sqrt(df[u_var] ** 2 + df[v_var] ** 2)
-        # Conversie naar Knopen (kt)
         df["wind_speed_kt"] = df["wind_speed_ms"] * 1.94384
-        # Conversie naar Bft
         df["wind_speed_bft"] = df["wind_speed_ms"].apply(ms_to_beaufort)
-
-        # Meteorologische windrichting (waar de wind VANDAAN komt)
-        df["wind_dir_deg"] = (
-            270 - np.arctan2(df[v_var], df[u_var]) * (180 / np.pi)
-        ) % 360
+        df["wind_dir_deg"] = (270 - np.arctan2(df[v_var], df[u_var]) * (180 / np.pi)) % 360
         df["wind_dir_cardinal"] = df["wind_dir_deg"].apply(degrees_to_cardinal)
 
-    # Neerslag verwerken
-    tp_var = next(
-        (v for v in ["tp", "total_precipitation", "var228"] if v in df.columns),
-        None,
-    )
-
+    # 3. Neerslag verwerken (m s^-1 of m -> mm/maand)
+    tp_var = next((v for v in ["tp", "total_precipitation", "var228"] if v in df.columns), None)
     if tp_var:
         units = ds[tp_var].attrs.get("units", "m s**-1")
         if units in ["m s**-1", "m/s", "m s-1"]:
-            df["neerslag_mm"] = (
-                df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
-            )
+            df["neerslag_mm"] = df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
         elif units in ["m", "meters"]:
             df["neerslag_mm"] = df[tp_var] * 1000.0
         else:
-            df["neerslag_mm"] = (
-                df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
-            )
+            df["neerslag_mm"] = df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
 
     ds.close()
     return df
 
+# --- INTERFACE & SIDEBAR ---
+st.title("🌤️ ERA5 Klimaat & Weer Analyse Tool")
+st.markdown("Download en analyseer maandelijkse ERA5 reanalyse-data direct vanaf Copernicus (CDS).")
 
-# 5. Session State initialiseren
-if "lat" not in st.session_state:
-    st.session_state["lat"] = 51.4988
-if "lon" not in st.session_state:
-    st.session_state["lon"] = 3.6109
-if "location_name" not in st.session_state:
-    st.session_state["location_name"] = "Middelburg, Zeeland, Nederland"
+st.sidebar.header("Locatie & Periode")
+lat = st.sidebar.number_input("Breedtegraad (Latitude)", value=52.10, step=0.01, format="%.2f")
+lon = st.sidebar.number_input("Lengtegraad (Longitude)", value=5.18, step=0.01, format="%.2f")
 
-
-def update_coords_from_search():
-    query = st.session_state.get("city_input_key", "")
-    if query.strip():
-        found_lat, found_lon, full_address = geocode_location(query)
-        if found_lat is not None and found_lon is not None:
-            st.session_state["lat"] = found_lat
-            st.session_state["lon"] = found_lon
-            st.session_state["input_lat"] = found_lat
-            st.session_state["input_lon"] = found_lon
-            st.session_state["location_name"] = full_address
-            st.toast(f"📍 Gevonden: {full_address}", icon="✅")
-        else:
-            st.toast("❌ Locatie niet gevonden. Controleer de spelling.", icon="⚠️")
-
-
-# 6. Zijbalk instellingen
-st.sidebar.header("⚙️ Instellingen")
-
-st.sidebar.subheader("1. Locatie zoeken")
-st.sidebar.text_input(
-    "Voer een stad of locatie in:",
-    value="Middelburg",
-    key="city_input_key",
-    help="Bijv. Middelburg, Rotterdam, Breda, Dresden of Parijs",
+start_jaar, eind_jaar = st.sidebar.slider(
+    "Selecteer periode",
+    min_value=1950,
+    max_value=2025,
+    value=(2015, 2024)
 )
 
-st.sidebar.button(
-    "🔍 Zoek & Kopieer Coördinaten",
-    on_click=update_coords_from_search,
-    use_container_width=True,
-)
+if st.sidebar.button("Data ophalen", type="primary"):
+    st.cache_data.clear()
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Geselecteerde Coördinaten:**")
+# --- MAIN APP LOGICA ---
+try:
+    df = download_era5_point_data(lat, lon, start_jaar, eind_jaar)
 
-# Controleer en initialiseer input_lat / input_lon veilig
-if "input_lat" not in st.session_state:
-    st.session_state["input_lat"] = st.session_state["lat"]
-if "input_lon" not in st.session_state:
-    st.session_state["input_lon"] = st.session_state["lon"]
+    st.success(f"Data succesvol ingeladen voor coördinaten ({lat:.2f}, {lon:.2f}) voor {start_jaar}-{eind_jaar}!")
 
-latitude = st.sidebar.number_input(
-    "Breedtegraad (Lat)",
-    min_value=-90.0,
-    max_value=90.0,
-    step=0.01,
-    format="%.4f",
-    key="input_lat",
-)
+    # KPI Overzicht
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Gemiddelde Temp.", f"{df['temperatuur_c'].mean():.1f} °C")
+    col2.metric("Gemiddelde Wind", f"{df['wind_speed_ms'].mean():.1f} m/s ({df['wind_speed_bft'].mean():.0f} Bft)")
+    col3.metric("Jaarlijkse Neerslag (~avg)", f"{(df['neerslag_mm'].sum() / (eind_jaar - start_jaar + 1)):.0f} mm")
 
-longitude = st.sidebar.number_input(
-    "Lengtegraad (Lon)",
-    min_value=-180.0,
-    max_value=180.0,
-    step=0.01,
-    format="%.4f",
-    key="input_lon",
-)
+    st.divider()
 
-# Hoofdwinstemmingen bijwerken vanuit de widgets
-st.session_state["lat"] = latitude
-st.session_state["lon"] = longitude
+    # Tabs voor visualisaties
+    tab1, tab2, tab3, tab4 = st.tabs(["🌡️ Temperatuur", "🌧️ Neerslag", "💨 Wind", "📄 Ruwe Data"])
 
-st.sidebar.subheader("2. Periode")
-jaar_bereik = st.sidebar.slider("Jaarbereik", 1950, 2025, (1990, 2024))
-
-st.sidebar.subheader("3. Eenheden")
-wind_unit = st.sidebar.selectbox(
-    "Windsnelheid Eenheid:", options=["m/s", "kt", "Bft"], index=0
-)
-
-fetch_data = st.sidebar.button(
-    "🚀 Haal ERA5 Data Op", type="primary", use_container_width=True
-)
-
-
-# 7. Hoofdscherm logica
-if fetch_data or "era5_df" in st.session_state:
-    if fetch_data:
-        current_lat = st.session_state["input_lat"]
-        current_lon = st.session_state["input_lon"]
-        current_label = st.session_state.get(
-            "location_name", "Aangepaste coördinaten"
+    with tab1:
+        st.subheader("Temperatuurverloop")
+        fig_temp = px.line(
+            df, x="time_clean", y="temperatuur_c",
+            labels={"time_clean": "Datum", "temperatuur_c": "Temperatuur (°C)"},
+            title="2m Temperatuur (Maandgemiddelden)"
         )
+        fig_temp.update_traces(line_color="#EF553B")
+        st.plotly_chart(fig_temp, use_container_width=True)
 
-        try:
-            with st.spinner("Verbinding maken met Copernicus CDS..."):
-                st.session_state["era5_df"] = download_era5_point_data(
-                    current_lat, current_lon, jaar_bereik[0], jaar_bereik[1]
-                )
-                st.session_state["loc_info"] = (
-                    f"{current_label} (Lat: {current_lat:.4f}°N, Lon:"
-                    f" {current_lon:.4f}°E)"
-                )
-        except Exception as e:
-            st.error(
-                f"Er is een fout opgetreden bij het ophalen van de data: {e}"
-            )
-            st.stop()
-
-    df = st.session_state["era5_df"]
-
-    st.caption(f"📍 **Locatie:** {st.session_state['loc_info']}")
-
-    maand_namen = {
-        1: "Jan",
-        2: "Feb",
-        3: "Mrt",
-        4: "Apr",
-        5: "Mei",
-        6: "Jun",
-        7: "Jul",
-        8: "Aug",
-        9: "Sep",
-        10: "Okt",
-        11: "Nov",
-        12: "Dec",
-    }
-    df["maand_naam"] = df["maand"].map(maand_namen)
-
-    # Tabs voor de Klimaatstudie
-    tab_temp, tab_wind, tab_precip = st.tabs(
-        ["🌡️ Temperatuur Studie", "💨 Wind Studie", "🌧️ Neerslag Studie"]
-    )
-
-    # --- TAB 1: TEMPERATUUR ---
-    with tab_temp:
-        st.subheader("📊 ERA5 2m Temperatuur")
-
-        df_stats_t = (
-            df.groupby(["maand", "maand_naam"])["temperatuur_c"]
-            .agg(
-                gemiddelde="mean",
-                p50="median",
-                p90=lambda x: np.percentile(x, 90),
-                min_temp="min",
-                max_temp="max",
-            )
-            .reset_index()
+    with tab2:
+        st.subheader("Maandelijkse Neerslag")
+        fig_precip = px.bar(
+            df, x="time_clean", y="neerslag_mm",
+            labels={"time_clean": "Datum", "neerslag_mm": "Neerslag (mm)"},
+            title="Totale Maandelijkse Neerslag"
         )
+        fig_precip.update_traces(marker_color="#636EFA")
+        st.plotly_chart(fig_precip, use_container_width=True)
 
-        jaargemiddelde_t = df["temperatuur_c"].mean()
-        warmste_maand_row = df_stats_t.loc[df_stats_t["gemiddelde"].idxmax()]
-        koudste_maand_row = df_stats_t.loc[df_stats_t["gemiddelde"].idxmin()]
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Klimaatgemiddelde (Totaal)", f"{jaargemiddelde_t:.2f} °C")
-        col2.metric(
-            f"Warmste Maand ({warmste_maand_row['maand_naam']})",
-            f"{warmste_maand_row['gemiddelde']:.2f} °C",
-            f"P90: {warmste_maand_row['p90']:.2f} °C",
+    with tab3:
+        st.subheader("Windsnelheid & Richting")
+        fig_wind = px.line(
+            df, x="time_clean", y="wind_speed_ms",
+            labels={"time_clean": "Datum", "wind_speed_ms": "Windsnelheid (m/s)"},
+            title="10m Windsnelheid (Maandgemiddelden)"
         )
-        col3.metric(
-            f"Koudste Maand ({koudste_maand_row['maand_naam']})",
-            f"{koudste_maand_row['gemiddelde']:.2f} °C",
-            f"P90: {koudste_maand_row['p90']:.2f} °C",
-        )
+        fig_wind.update_traces(line_color="#00CC96")
+        st.plotly_chart(fig_wind, use_container_width=True)
 
-        fig_t = go.Figure()
-        fig_t.add_trace(
-            go.Box(
-                x=df["maand_naam"],
-                y=df["temperatuur_c"],
-                name="Verdeling (P50 & Range)",
-                boxpoints=False,
-                fillcolor="rgba(100, 149, 237, 0.4)",
-                line=dict(color="#1f77b4", width=2),
-                whiskerwidth=0.8,
-                boxmean=True,
-            )
-        )
+    with tab4:
+        st.subheader("Tabelweergave")
+        st.dataframe(df[["time_clean", "temperatuur_c", "neerslag_mm", "wind_speed_ms", "wind_speed_bft", "wind_dir_cardinal"]], use_container_width=True)
 
-        fig_t.add_trace(
-            go.Scatter(
-                x=df_stats_t["maand_naam"],
-                y=df_stats_t["gemiddelde"],
-                mode="markers+lines",
-                name="Gemiddelde (◆)",
-                marker=dict(size=10, color="red", symbol="diamond"),
-                line=dict(color="red", width=1.5, dash="dot"),
-            )
-        )
-
-        fig_t.update_layout(
-            title=(
-                "Maandelijkse Temperatuurverdeling & Extremen"
-                f" ({jaar_bereik[0]}-{jaar_bereik[1]})"
-            ),
-            yaxis_title="Temperatuur (°C)",
-            xaxis_title="Maand",
-            xaxis=dict(
-                categoryorder="array", categoryarray=list(maand_namen.values())
-            ),
-            hovermode="x unified",
-        )
-        st.plotly_chart(fig_t, use_container_width=True)
-
-    # --- TAB 2: WIND ---
-    with tab_wind:
-        st.subheader("💨 ERA5 10m Wind Klimatologie")
-
-        if wind_unit == "m/s":
-            wind_col = "wind_speed_ms"
-            unit_label = "m/s"
-        elif wind_unit == "kt":
-            wind_col = "wind_speed_kt"
-            unit_label = "kt"
-        else:
-            wind_col = "wind_speed_bft"
-            unit_label = "Bft"
-
-        df_stats_w = (
-            df.groupby(["maand", "maand_naam"])[wind_col]
-            .agg(
-                gemiddelde="mean",
-                p50="median",
-                p90=lambda x: np.percentile(x, 90),
-                max_wind="max",
-            )
-            .reset_index()
-        )
-
-        gem_wind_totaal = df[wind_col].mean()
-        windigste_maand = df_stats_w.loc[df_stats_w["gemiddelde"].idxmax()]
-        p90_totaal = np.percentile(df[wind_col], 90)
-
-        w_col1, w_col2, w_col3 = st.columns(3)
-        w_col1.metric(
-            "Klimaatgemiddelde Windsnelheid", f"{gem_wind_totaal:.2f} {unit_label}"
-        )
-        w_col2.metric(
-            f"Windrijkste Maand ({windigste_maand['maand_naam']})",
-            f"{windigste_maand['gemiddelde']:.2f} {unit_label}",
-            f"P50: {windigste_maand['p50']:.2f} {unit_label}",
-        )
-        w_col3.metric(
-            "90e Percentiel (P90 Totaal)", f"{p90_totaal:.2f} {unit_label}"
-        )
-
-        fig_w = go.Figure()
-
-        fig_w.add_trace(
-            go.Box(
-                x=df["maand_naam"],
-                y=df[wind_col],
-                name="Spreiding (P50 Mediaan)",
-                boxpoints=False,
-                fillcolor="rgba(46, 204, 113, 0.3)",
-                line=dict(color="#27ae60", width=2),
-                whiskerwidth=0.8,
-            )
-        )
-
-        fig_w.add_trace(
-            go.Scatter(
-                x=df_stats_w["maand_naam"],
-                y=df_stats_w["gemiddelde"],
-                mode="markers+lines",
-                name="Gemiddelde (◆)",
-                marker=dict(size=10, color="darkgreen", symbol="diamond"),
-                line=dict(color="darkgreen", width=1.5, dash="dot"),
-            )
-        )
-
-        fig_w.update_layout(
-            title=(
-                "Windsnelheid Klimatologie per Maand"
-                f" ({jaar_bereik[0]}-{jaar_bereik[1]})"
-            ),
-            yaxis_title=f"Windsnelheid ({unit_label})",
-            xaxis_title="Maand",
-            xaxis=dict(
-                categoryorder="array", categoryarray=list(maand_namen.values())
-            ),
-            hovermode="x unified",
-        )
-        st.plotly_chart(fig_w, use_container_width=True)
-
-        st.markdown("---")
-        st.subheader("🧭 Windroos (Frequentie van Windrichtingen)")
-
-        selected_month = st.selectbox(
-            "Filter Windroos op Maand:",
-            options=["Hele Jaar"] + list(maand_namen.values()),
-            index=0,
-        )
-
-        if selected_month == "Hele Jaar":
-            df_rose = df.copy()
-        else:
-            df_rose = df[df["maand_naam"] == selected_month]
-
-        if wind_unit == "m/s":
-            bins = [0, 2, 4, 6, 8, 10, 100]
-            labels = ["< 2", "2 - 4", "4 - 6", "6 - 8", "8 - 10", "> 10"]
-        elif wind_unit == "kt":
-            bins = [0, 4, 8, 12, 16, 22, 100]
-            labels = ["< 4", "4 - 8", "8 - 12", "12 - 16", "16 - 22", "> 22"]
-        else:
-            bins = [-0.5, 1.5, 3.5, 5.5, 7.5, 12.5]
-            labels = ["0-1 Bft", "2-3 Bft", "4-5 Bft", "6-7 Bft", "> 8 Bft"]
-
-        df_rose["speed_class"] = pd.cut(
-            df_rose[wind_col], bins=bins, labels=labels, include_lowest=True
-        )
-
-        fig_rose = px.bar_polar(
-            df_rose,
-            r="wind_speed_ms",
-            theta="wind_dir_cardinal",
-            color="speed_class",
-            template="plotly_white",
-            color_discrete_sequence=px.colors.sequential.Viridis,
-            title=(
-                f"Windroos - {selected_month}"
-                f" ({jaar_bereik[0]}-{jaar_bereik[1]})"
-            ),
-            category_orders={
-                "wind_dir_cardinal": [
-                    "N",
-                    "NNO",
-                    "NO",
-                    "ONO",
-                    "O",
-                    "OZO",
-                    "ZO",
-                    "ZZO",
-                    "Z",
-                    "ZZW",
-                    "ZW",
-                    "WZW",
-                    "W",
-                    "WNW",
-                    "NW",
-                    "NNW",
-                ]
-            },
-        )
-
-        fig_rose.update_layout(
-            polar=dict(
-                radialaxis=dict(ticksuffix=" %", angle=45),
-                angularaxis=dict(direction="clockwise"),
-            ),
-            legend_title=f"Snelheid ({unit_label})",
-        )
-
-        st.plotly_chart(fig_rose, use_container_width=True)
-
-    # --- TAB 3: NEERSLAG ---
-    with tab_precip:
-        st.subheader("🌧️ ERA5 Totale Neerslag Klimatologie")
-
-        if "neerslag_mm" not in df.columns:
-            st.warning(
-                "⚠️ `neerslag_mm` niet gevonden in de gecachte data. Wis de"
-                " cache rechtsboven via het Streamlit menu (**Clear cache**) en"
-                " klik daarna opnieuw op **'🚀 Haal ERA5 Data Op'**."
-            )
-        else:
-            with st.expander("🔍 Bekijk controle/debug data van neerslag"):
-                st.dataframe(df[["jaar", "maand", "neerslag_mm"]].head(12))
-
-            df_stats_p = (
-                df.groupby(["maand", "maand_naam"])["neerslag_mm"]
-                .agg(
-                    gemiddelde="mean",
-                    p50="median",
-                    p90=lambda x: np.percentile(x, 90),
-                    max_precip="max",
-                )
-                .reset_index()
-            )
-
-            jaartotaal_gem = df.groupby("jaar")["neerslag_mm"].sum().mean()
-            natste_maand_row = df_stats_p.loc[
-                df_stats_p["gemiddelde"].idxmax()
-            ]
-            droogste_maand_row = df_stats_p.loc[
-                df_stats_p["gemiddelde"].idxmin()
-            ]
-
-            p_col1, p_col2, p_col3 = st.columns(3)
-            p_col1.metric("Gem. Jaarlijkse Neerslag", f"{jaartotaal_gem:.1f} mm")
-            p_col2.metric(
-                f"Natste Maand ({natste_maand_row['maand_naam']})",
-                f"{natste_maand_row['gemiddelde']:.1f} mm",
-                f"P90: {natste_maand_row['p90']:.1f} mm",
-            )
-            p_col3.metric(
-                f"Droogste Maand ({droogste_maand_row['maand_naam']})",
-                f"{droogste_maand_row['gemiddelde']:.1f} mm",
-                f"P50: {droogste_maand_row['p50']:.1f} mm",
-            )
-
-            fig_p = go.Figure()
-
-            fig_p.add_trace(
-                go.Box(
-                    x=df["maand_naam"],
-                    y=df["neerslag_mm"],
-                    name="Spreiding (P50 Mediaan)",
-                    boxpoints=False,
-                    fillcolor="rgba(52, 152, 219, 0.3)",
-                    line=dict(color="#2980b9", width=2),
-                    whiskerwidth=0.8,
-                )
-            )
-
-            fig_p.add_trace(
-                go.Scatter(
-                    x=df_stats_p["maand_naam"],
-                    y=df_stats_p["p90"],
-                    mode="markers+lines",
-                    name="90e Percentiel (P90)",
-                    marker=dict(size=8, color="#e67e22", symbol="triangle-up"),
-                    line=dict(color="#e67e22", width=2, dash="dash"),
-                )
-            )
-
-            fig_p.add_trace(
-                go.Scatter(
-                    x=df_stats_p["maand_naam"],
-                    y=df_stats_p["gemiddelde"],
-                    mode="markers+lines",
-                    name="Gemiddelde (◆)",
-                    marker=dict(size=10, color="navy", symbol="diamond"),
-                    line=dict(color="navy", width=1.5, dash="dot"),
-                )
-            )
-
-            fig_p.update_layout(
-                title=(
-                    "Maandelijkse Neerslagsommen (mm) & Extremen"
-                    f" ({jaar_bereik[0]}-{jaar_bereik[1]})"
-                ),
-                yaxis_title="Neerslag (mm/maand)",
-                xaxis_title="Maand",
-                xaxis=dict(
-                    categoryorder="array",
-                    categoryarray=list(maand_namen.values()),
-                ),
-                hovermode="x unified",
-            )
-            st.plotly_chart(fig_p, use_container_width=True)
-
-else:
-    st.info(
-        "👈 Zoek een locatie of stel coördinaten in de zijbalk in en klik op **'🚀"
-        " Haal ERA5 Data Op'**."
-    )
+except Exception as e:
+    st.info("⚡ Klik in de sidebar op **Data ophalen** of controleer je parameters om te starten.")
