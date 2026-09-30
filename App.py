@@ -73,12 +73,14 @@ def get_cds_client():
     else:
         return cdsapi.Client()
 
+# 16 Windstreken in klokmee-volgorde vanaf het Noorden
+WIND_RICHTINGEN = ['N', 'NNO', 'NO', 'ONO', 'O', 'OZO', 'ZO', 'ZZO', 
+                   'Z', 'ZZW', 'ZW', 'WZW', 'W', 'WNW', 'NW', 'NNW']
+
 def degrees_to_cardinal(deg):
     if pd.isna(deg): return "N/A"
-    dirs = ['N', 'NNO', 'NO', 'ONO', 'O', 'OZO', 'ZO', 'ZZO', 
-            'Z', 'ZZW', 'ZW', 'WZW', 'W', 'WNW', 'NW', 'NNW']
     ix = int((deg + 11.25) / 22.5)
-    return dirs[ix % 16]
+    return WIND_RICHTINGEN[ix % 16]
 
 MAAND_NAMEN = ["Jan", "Feb", "Mrt", "Apr", "Mei", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"]
 
@@ -143,7 +145,7 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
                               np.exp((17.625 * df["temp_c"]) / (243.04 + df["temp_c"])))
         df["rh_pct"] = df["rh_pct"].clip(0, 100)
 
-    # Wind
+    # Wind (Meteorologische herkomstrichting)
     u_var = next((cols_lower[c] for c in ["u10", "10m_u_component_of_wind"] if c in cols_lower), None)
     v_var = next((cols_lower[c] for c in ["v10", "10m_v_component_of_wind"] if c in cols_lower), None)
     if u_var and v_var:
@@ -168,12 +170,10 @@ def create_monthly_percentile_boxplot(df, var_col, title, y_label, color_hex="#1
     df_plot = df.copy()
     df_plot["maand_naam"] = pd.Categorical(df_plot["maand_naam"], categories=MAAND_NAMEN, ordered=True)
     
-    # Gemiddelde per maand berekenen voor de rode lijn
     df_avg = df_plot.groupby("maand_naam", observed=False)[var_col].mean().reset_index()
 
     fig = go.Figure()
 
-    # Boxplot per maand toevoegen op de X-as
     for month_name in MAAND_NAMEN:
         month_data = df_plot[df_plot["maand_naam"] == month_name][var_col].dropna()
         if len(month_data) == 0:
@@ -205,7 +205,6 @@ def create_monthly_percentile_boxplot(df, var_col, title, y_label, color_hex="#1
             )
         ))
 
-    # Rode stippellijn voor het Maandgemiddelde
     fig.add_trace(go.Scatter(
         x=df_avg["maand_naam"],
         y=df_avg[var_col],
@@ -235,13 +234,11 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                 df = fetch_era5_point_data(lat, lon, start_jaar, eind_jaar)
                 st.success(f"Data succesvol geladen voor locatie Lat: {lat}, Lon: {lon} ({start_jaar}-{eind_jaar})")
 
-                # TABBLADEN MAKEN
                 tab_grafieken, tab_data = st.tabs([
                     "📊 Klimaatstatistieken & Boxplots", 
                     "📋 Ruwe Data & Exporteren"
                 ])
 
-                # --- TAB 1: GRAFIEKEN ONDER ELKAAR ---
                 with tab_grafieken:
                     st.info("💡 **Uitleg Grafieken**: Op de X-as staan de 12 afzonderlijke maanden. De gekleurde balken tonen de verdeling per maand (**10%**, **25%**, **50%/mediaan**, **75%** en **90% percentielen** over alle jaren). De **rode onderbroken lijn** geeft het gemiddelde aan per maand.")
 
@@ -278,15 +275,26 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                         st.plotly_chart(fig_wind, use_container_width=True)
                         st.divider()
 
-                    # 4. Windrichting frequentie
+                    # 4. Windrichting frequentie (GEORIENTEERD MET NOORDEN BOVENAAN)
                     if "wind_dir_cardinal" in df.columns:
                         st.subheader("💨 Windrichting Verdeling")
-                        wind_counts = df["wind_dir_cardinal"].value_counts().reset_index()
+                        wind_counts = df["wind_dir_cardinal"].value_counts().reindex(WIND_RICHTINGEN, fill_value=0).reset_index()
                         wind_counts.columns = ["richting", "frequentie"]
+                        
                         fig_rose = px.bar_polar(
                             wind_counts, r="frequentie", theta="richting",
                             template="plotly_dark", title="Windrichting Frequentie (Totaal over gehele periode)",
                             color_discrete_sequence=px.colors.sequential.Plasma
+                        )
+                        
+                        # Noorden bovenaan (start_angle=90) en met de klok mee (direction="clockwise")
+                        fig_rose.update_polars(
+                            angularaxis=dict(
+                                direction="clockwise",
+                                rotation=90,
+                                categoryorder="array",
+                                categoryarray=WIND_RICHTINGEN
+                            )
                         )
                         st.plotly_chart(fig_rose, use_container_width=True)
                         st.divider()
@@ -312,14 +320,12 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                         )
                         st.plotly_chart(fig_tcc, use_container_width=True)
 
-                # --- TAB 2: RUWE DATA ---
                 with tab_data:
                     st.subheader("📋 Ruwe Data Overzicht")
                     
                     display_cols = [c for c in ["time_clean", "maand_naam", "temp_c", "rh_pct", "wind_speed_ms", "wind_dir_cardinal", "mslp_hpa", "tcc_pct"] if c in df.columns]
                     st.dataframe(df[display_cols], use_container_width=True)
                     
-                    # CSV Download Knop
                     csv_data = df[display_cols].to_csv(index=False)
                     st.download_button(
                         label="💾 Download Alle Data als CSV",
