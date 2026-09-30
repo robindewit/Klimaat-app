@@ -113,7 +113,7 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         "reanalysis-era5-single-levels-monthly-means", request, download_path
     )
 
-    # 1. Controleer op eventuele CDS-foutmeldingen in platte tekst
+    # 1. Controle op geldige binary header
     with open(download_path, "rb") as f:
         header = f.read(100)
 
@@ -124,16 +124,15 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         st.code(error_content)
         st.stop()
 
-    # 2. Afhandeling van eventueel ingepakte ZIP-bestanden
+    # 2. Afhandeling van ZIP-bestanden
     file_to_open = download_path
     if zipfile.is_zipfile(download_path):
         with zipfile.ZipFile(download_path, 'r') as zip_ref:
             extracted_files = zip_ref.namelist()
-            # Pak het eerste databestand uit
             target_file = [f for f in extracted_files if f.endswith(('.nc', '.nc4', '.grib'))][0]
             file_to_open = zip_ref.extract(target_file, path=temp_dir)
 
-    # 3. Openen met xarray via fallback-engines
+    # 3. Openen met xarray
     ds = None
     engines = ["netcdf4", "h5netcdf", "scipy", "cfgrib"]
     last_error = None
@@ -147,7 +146,6 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
 
     if ds is None:
         st.error(f"❌ Het gedownloade bestand kon niet worden geopend door xarray.\nDetails: {last_error}")
-        st.info("💡 Tip: Controleer of `netcdf4` en `h5netcdf` correct in je `requirements.txt` staan.")
         st.stop()
 
     # Determineer tijdsdimensie
@@ -173,14 +171,28 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     df["maand"] = df["time_clean"].dt.month
     df["days_in_month"] = df["time_clean"].dt.days_in_month
 
-    # Temperatuur (°C)
-    t_var = next((v for v in ["t2m", "2m_temperature", "var167"] if v in df.columns), None)
-    if t_var:
-        df["temperatuur_c"] = df[t_var] - 273.15
+    # Dynamic column mapping inspection
+    cols_lower = {str(c).lower(): c for c in df.columns}
 
-    # Wind
-    u_var = next((v for v in ["u10", "10m_u_component_of_wind", "var165"] if v in df.columns), None)
-    v_var = next((v for v in ["v10", "10m_v_component_of_wind", "var166"] if v in df.columns), None)
+    # --- TEMPERATUUR (°C) ---
+    t_var = None
+    for candidate in ["t2m", "2m_temperature", "var167", "t"]:
+        if candidate in cols_lower:
+            t_var = cols_lower[candidate]
+            break
+
+    if t_var:
+        # Check of temperatuur in Kelvin is
+        if df[t_var].mean() > 200:
+            df["temperatuur_c"] = df[t_var] - 273.15
+        else:
+            df["temperatuur_c"] = df[t_var]
+    else:
+        df["temperatuur_c"] = np.nan
+
+    # --- WIND ---
+    u_var = next((cols_lower[c] for c in ["u10", "10m_u_component_of_wind", "var165", "u"] if c in cols_lower), None)
+    v_var = next((cols_lower[c] for c in ["v10", "10m_v_component_of_wind", "var166", "v"] if c in cols_lower), None)
 
     if u_var and v_var:
         df["wind_speed_ms"] = np.sqrt(df[u_var] ** 2 + df[v_var] ** 2)
@@ -188,23 +200,39 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         df["wind_speed_bft"] = df["wind_speed_ms"].apply(ms_to_beaufort)
         df["wind_dir_deg"] = (270 - np.arctan2(df[v_var], df[u_var]) * (180 / np.pi)) % 360
         df["wind_dir_cardinal"] = df["wind_dir_deg"].apply(degrees_to_cardinal)
+    else:
+        df["wind_speed_ms"] = np.nan
+        df["wind_speed_bft"] = 0
+        df["wind_dir_cardinal"] = "N/A"
 
-    # Neerslag (mm)
-    tp_var = next((v for v in ["tp", "total_precipitation", "var228"] if v in df.columns), None)
+    # --- NEERSLAG (mm) ---
+    tp_var = None
+    for candidate in ["tp", "total_precipitation", "var228", "precip"]:
+        if candidate in cols_lower:
+            tp_var = cols_lower[candidate]
+            break
+
     if tp_var:
-        units = ds[tp_var].attrs.get("units", "m s**-1")
-        if units in ["m s**-1", "m/s", "m s-1"]:
+        units = ""
+        if tp_var in ds.variables:
+            units = ds[tp_var].attrs.get("units", "").lower()
+
+        # Conversie naar mm/maand afhankelijk van eenheden
+        if "m s" in units or "m/s" in units:
             df["neerslag_mm"] = df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
-        elif units in ["m", "meters"]:
+        elif units in ["m", "meters"] or df[tp_var].max() < 2.0:
             df["neerslag_mm"] = df[tp_var] * 1000.0
         else:
+            # Fallback aanname: m/s per daggemiddelde
             df["neerslag_mm"] = df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
+    else:
+        df["neerslag_mm"] = 0.0
 
     ds.close()
     return df
 
 # --- INTERFACE & SIDEBAR ---
-st.title("🌤️ ERA5 Klimaat & Weer Analyse Tool")
+st.title("🌤️️ ERA5 Klimaat & Weer Analyse Tool")
 st.markdown("Download en analyseer maandelijkse ERA5 reanalyse-data direct vanaf Copernicus (CDS).")
 
 if "lat" not in st.session_state:
@@ -221,7 +249,7 @@ if st.sidebar.button("Zoek locatie"):
     if zoek_plaats:
         try:
             geolocator = Nominatim(
-                user_agent="era5_streamlit_klimaat_app_v2", 
+                user_agent="era5_streamlit_klimaat_app_v3", 
                 timeout=10
             )
             location = geolocator.geocode(zoek_plaats)
