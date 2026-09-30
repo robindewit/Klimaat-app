@@ -175,14 +175,8 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     cols_lower = {str(c).lower(): c for c in df.columns}
 
     # --- TEMPERATUUR (°C) ---
-    t_var = None
-    for candidate in ["t2m", "2m_temperature", "var167", "t"]:
-        if candidate in cols_lower:
-            t_var = cols_lower[candidate]
-            break
-
+    t_var = next((cols_lower[c] for c in ["t2m", "2m_temperature", "var167", "t"] if c in cols_lower), None)
     if t_var:
-        # Check of temperatuur in Kelvin is
         if df[t_var].mean() > 200:
             df["temperatuur_c"] = df[t_var] - 273.15
         else:
@@ -205,26 +199,22 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         df["wind_speed_bft"] = 0
         df["wind_dir_cardinal"] = "N/A"
 
-    # --- NEERSLAG (mm) ---
-    tp_var = None
-    for candidate in ["tp", "total_precipitation", "var228", "precip"]:
-        if candidate in cols_lower:
-            tp_var = cols_lower[candidate]
-            break
+    # --- NEERSLAG (mm/maand) ---
+    tp_var = next((cols_lower[c] for c in ["tp", "total_precipitation", "var228", "precip"] if c in cols_lower), None)
 
-    if tp_var:
-        units = ""
-        if tp_var in ds.variables:
-            units = ds[tp_var].attrs.get("units", "").lower()
+    if tp_var and not df[tp_var].isnull().all():
+        raw_vals = df[tp_var]
+        mean_val = raw_vals.mean()
 
-        # Conversie naar mm/maand afhankelijk van eenheden
-        if "m s" in units or "m/s" in units:
-            df["neerslag_mm"] = df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
-        elif units in ["m", "meters"] or df[tp_var].max() < 2.0:
-            df["neerslag_mm"] = df[tp_var] * 1000.0
+        # ERA5 Maandgemiddelden levert tp aan als 'm/dag' (typisch tussen 0.0001 en 0.05 m/dag)
+        if mean_val < 0.1:
+            df["neerslag_mm"] = raw_vals * 1000.0 * df["days_in_month"]
+        # Als de CDS data al gecumuleerd is in meters per maand (bijv. 0.05 tot 0.5 m/maand)
+        elif mean_val < 5.0:
+            df["neerslag_mm"] = raw_vals * 1000.0
+        # Als de data al direct in mm/dag of mm/maand staat
         else:
-            # Fallback aanname: m/s per daggemiddelde
-            df["neerslag_mm"] = df[tp_var] * 86400.0 * df["days_in_month"] * 1000.0
+            df["neerslag_mm"] = raw_vals
     else:
         df["neerslag_mm"] = 0.0
 
@@ -232,7 +222,7 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
     return df
 
 # --- INTERFACE & SIDEBAR ---
-st.title("🌤️️ ERA5 Klimaat & Weer Analyse Tool")
+st.title("🌤 ERA5 Klimaat & Weer Analyse Tool")
 st.markdown("Download en analyseer maandelijkse ERA5 reanalyse-data direct vanaf Copernicus (CDS).")
 
 if "lat" not in st.session_state:
