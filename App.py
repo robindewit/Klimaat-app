@@ -239,6 +239,53 @@ def create_monthly_percentile_boxplot(df, var_col, title, y_label, color_hex="#1
     )
     return fig
 
+# --- FUNCTIE VOOR WINDROOS MET WINDSSNELHEIDSKLASSEN ---
+def create_wind_rose(df, wind_col, wind_unit):
+    df_rose = df.dropna(subset=[wind_col, "wind_dir_cardinal"]).copy()
+    
+    # Bepaal categorieën/bins op basis van geselecteerde eenheid
+    if wind_unit == "kt":
+        bins = [0, 4, 10, 16, 22, 28, np.inf]
+        labels = ["< 4 kt", "4-10 kt", "10-16 kt", "16-22 kt", "22-28 kt", "> 28 kt"]
+    elif wind_unit == "Bft":
+        bins = [-0.5, 1.5, 3.5, 5.5, 7.5, 9.5, 12.5]
+        labels = ["0-1 Bft", "2-3 Bft", "4-5 Bft", "6-7 Bft", "8-9 Bft", ">= 10 Bft"]
+    else:  # m/s
+        bins = [0, 2, 4, 6, 8, 11, np.inf]
+        labels = ["< 2 m/s", "2-4 m/s", "4-6 m/s", "6-8 m/s", "8-11 m/s", "> 11 m/s"]
+
+    df_rose["wind_cat"] = pd.cut(df_rose[wind_col], bins=bins, labels=labels, right=False)
+
+    # Telling per richting en snelheidsklasse
+    counts = df_rose.groupby(["wind_dir_cardinal", "wind_cat"], observed=False).size().reset_index(name="frequentie")
+    counts["wind_dir_cardinal"] = pd.Categorical(counts["wind_dir_cardinal"], categories=WIND_RICHTINGEN, ordered=True)
+    counts = counts.sort_values(["wind_dir_cardinal", "wind_cat"])
+
+    fig = px.bar_polar(
+        counts,
+        r="frequentie",
+        theta="wind_dir_cardinal",
+        color="wind_cat",
+        template="plotly_dark",
+        title=f"Windroos met Windsnelheidsverdeling ({wind_unit})",
+        color_discrete_sequence=px.colors.sequential.Turbo,
+        category_orders={"wind_dir_cardinal": WIND_RICHTINGEN, "wind_cat": labels}
+    )
+
+    fig.update_polars(
+        angularaxis=dict(
+            direction="clockwise",
+            rotation=90,
+            categoryorder="array",
+            categoryarray=WIND_RICHTINGEN
+        )
+    )
+    fig.update_layout(
+        legend_title_text=f"Snelheid ({wind_unit})",
+        margin=dict(l=40, r=40, t=50, b=40)
+    )
+    return fig
+
 # --- HOOFDPROGRAMMA ---
 if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
     if start_jaar > eind_jaar:
@@ -290,7 +337,7 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                         st.plotly_chart(fig_rh, use_container_width=True)
                         st.divider()
 
-                    # 3. Windsnelheid (dynamisch op basis van gekozen eenheid)
+                    # 3. Windsnelheid
                     if wind_col in df.columns:
                         fig_wind = create_monthly_percentile_boxplot(
                             df, wind_col, 
@@ -301,26 +348,10 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                         st.plotly_chart(fig_wind, use_container_width=True)
                         st.divider()
 
-                    # 4. Windrichting frequentie
-                    if "wind_dir_cardinal" in df.columns:
-                        st.subheader("💨 Windrichting Verdeling")
-                        wind_counts = df["wind_dir_cardinal"].value_counts().reindex(WIND_RICHTINGEN, fill_value=0).reset_index()
-                        wind_counts.columns = ["richting", "frequentie"]
-                        
-                        fig_rose = px.bar_polar(
-                            wind_counts, r="frequentie", theta="richting",
-                            template="plotly_dark", title="Windrichting Frequentie (Totaal over gehele periode)",
-                            color_discrete_sequence=px.colors.sequential.Plasma
-                        )
-                        
-                        fig_rose.update_polars(
-                            angularaxis=dict(
-                                direction="clockwise",
-                                rotation=90,
-                                categoryorder="array",
-                                categoryarray=WIND_RICHTINGEN
-                            )
-                        )
+                    # 4. Windroos met windsnelheden per richting
+                    if "wind_dir_cardinal" in df.columns and wind_col in df.columns:
+                        st.subheader("💨 Windroos met Windsnelheidsverdeling")
+                        fig_rose = create_wind_rose(df, wind_col, wind_eenheid)
                         st.plotly_chart(fig_rose, use_container_width=True)
                         st.divider()
 
