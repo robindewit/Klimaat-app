@@ -1,10 +1,12 @@
 streamlit
-cdsapi
-xarray
-netcdf4
-h5netcdf
-scipy
 pandas
 numpy
 plotly
+xarray
+cdsapi
 geopy
+netcdf4
+h5netcdf
+scipy
+cfgrib
+eccodes
