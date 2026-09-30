@@ -18,7 +18,7 @@ st.set_page_config(
 
 st.title("🌤️ ERA5 Klimaatstatistieken per Locatie")
 st.markdown("""
-Bekijk klimaatdata en statistieken voor een **specifieke specifieke locatie** (plaatsnaam of coördinaten) op basis van ERA5 reanalyse.
+Bekijk klimaatdata en statistieken voor een **specifieke locatie** (plaatsnaam of coördinaten) op basis van ERA5 reanalyse.
 """)
 
 # --- SESSIE STATUS EN LOCATIE ZOEKEN ---
@@ -71,7 +71,6 @@ def get_cds_client():
             f.write(f"url: {url}\nkey: {key}\n")
         return cdsapi.Client(url=url, key=key)
     else:
-        # Valt terug op ~/.cdsapirc bestand indien aanwezig
         return cdsapi.Client()
 
 def degrees_to_cardinal(deg):
@@ -111,11 +110,12 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
         "month": [f"{m:02d}" for m in range(1, 13)],
         "time": "00:00",
         "area": area_box,
-        "data_format": "netcdf",  # 'data_format' i.p.v. 'format'
+        "data_format": "netcdf",
     }
 
     if not os.path.exists(download_path):
-        c.retrieve("reanalysis-monthly-means-of-daily-means", request, download_path)
+        # JUISTE DATASET NAAM VOOR CDS API v2 / NEW CDS:
+        c.retrieve("reanalysis-era5-single-levels-monthly-means", request, download_path)
 
     # Openen en snijden naar het exacte dichtstbijzijnde punt
     ds = xr.open_dataset(download_path)
