@@ -112,25 +112,35 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         "reanalysis-era5-single-levels-monthly-means", request, output_path
     )
 
-    # Validatie van het gedownloade bestand
+    # --- GEUPDATE VALIDATIE VAN HET GEDOWNLOADDE BESTAND ---
     with open(output_path, "rb") as f:
         header = f.read(100)
 
-    if not (header.startswith(b"CDF") or header.startswith(b"\x89HDF")):
+    # Controleer of het bestand start met bekende binaire headers (CDF, HDF/NetCDF, PK/ZIP, GRIB)
+    valid_headers = (b"CDF", b"\x89HDF", b"PK", b"GRIB")
+    is_valid_binary = any(header.startswith(h) or h in header for h in valid_headers)
+
+    if not is_valid_binary:
         with open(output_path, "r", encoding="utf-8", errors="ignore") as f:
             error_content = f.read()
-        st.error("⚠️ CDS heeft geen geldig NetCDF-bestand teruggegeven. Foutmelding van CDS:")
+        st.error("⚠️ CDS heeft geen geldig databestand teruggegeven. Foutmelding van CDS:")
         st.code(error_content)
         st.stop()
 
-    try:
-        ds = xr.open_dataset(output_path, engine="netcdf4")
-    except Exception as e:
+    # Openen met xarray via verschillende mogelijke engines
+    ds = None
+    engines_to_try = ["netcdf4", "h5netcdf", "scipy"]
+    
+    for eng in engines_to_try:
         try:
-            ds = xr.open_dataset(output_path, engine="h5netcdf")
-        except Exception as inner_e:
-            st.error(f"Kan het NetCDF-bestand niet lezen: {inner_e}")
-            st.stop()
+            ds = xr.open_dataset(output_path, engine=eng)
+            break
+        except Exception:
+            continue
+
+    if ds is None:
+        st.error("❌ Het gedownloade NetCDF-bestand kon niet worden gelezen door xarray.")
+        st.stop()
 
     time_dim = None
     for possible_time in ["valid_time", "time", "date", "valid_month"]:
@@ -201,7 +211,6 @@ zoek_plaats = st.sidebar.text_input("Zoek op plaatsnaam:", placeholder="bijv. De
 if st.sidebar.button("Zoek locatie"):
     if zoek_plaats:
         try:
-            # Langere timeout (10s) en unieke user_agent ter voorkoming van ReadTimeoutError
             geolocator = Nominatim(
                 user_agent="era5_streamlit_klimaat_app_v1", 
                 timeout=10
