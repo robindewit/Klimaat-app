@@ -112,7 +112,7 @@ def download_era5_point_data(lat, lon, start_jaar, eind_jaar):
         "reanalysis-era5-single-levels-monthly-means", request, output_path
     )
 
-    # Validatie
+    # Validatie van het gedownloade bestand
     with open(output_path, "rb") as f:
         header = f.read(100)
 
@@ -201,16 +201,26 @@ zoek_plaats = st.sidebar.text_input("Zoek op plaatsnaam:", placeholder="bijv. De
 if st.sidebar.button("Zoek locatie"):
     if zoek_plaats:
         try:
-            geolocator = Nominatim(user_agent="era5_streamlit_app")
+            # Langere timeout (10s) en unieke user_agent ter voorkoming van ReadTimeoutError
+            geolocator = Nominatim(
+                user_agent="era5_streamlit_klimaat_app_v1", 
+                timeout=10
+            )
             location = geolocator.geocode(zoek_plaats)
             if location:
                 st.session_state.lat = round(location.latitude, 2)
                 st.session_state.lon = round(location.longitude, 2)
-                st.sidebar.success(f"Gevonden: {location.address.split(',')[0]} ({st.session_state.lat}, {st.session_state.lon})")
+                st.sidebar.success(
+                    f"Gevonden: {location.address.split(',')[0]} "
+                    f"({st.session_state.lat}, {st.session_state.lon})"
+                )
             else:
-                st.sidebar.error("Locatie niet gevonden.")
+                st.sidebar.error("Locatie niet gevonden. Probeer een andere zoekterm.")
         except Exception as e:
-            st.sidebar.error(f"Fout bij zoeken: {e}")
+            st.sidebar.error(
+                f"Zoekdienst reageert niet op tijd. Vul eventueel handmatig "
+                f"de coördinaten hieronder in. Fout: {e}"
+            )
 
 st.sidebar.markdown("---")
 st.sidebar.header("📅 2. Coördinaten & Periode")
