@@ -22,9 +22,9 @@ Bekijk klimaatdata en maandelijkse verdelingen (met 50% en 90% percentielen) voo
 """)
 
 # --- SESSIE STATUS EN LOCATIE ZOEKEN ---
-if "lat" not in st.session_state: 
+if "lat" not in st.session_state:
     st.session_state.lat = 52.10  # Standaard De Bilt
-if "lon" not in st.session_state: 
+if "lon" not in st.session_state:
     st.session_state.lon = 5.18
 
 st.sidebar.header("📍 1. Kies Locatie")
@@ -165,12 +165,6 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
 
 # --- FUNCTIE VOOR MAANDELIJKSE PERCENTIEL BOXPLOT ---
 def create_monthly_percentile_boxplot(df, var_col, title, y_label, color_hex="#1f77b4"):
-    """
-    Genereert een grafiek met 12 boxplots op de X-as (Jan t/m Dec).
-    Elke boxplot gebruikt alle data van die specifieke maand over alle gekozen jaren.
-    - Mediaan = 50% persentiel
-    - Onderste/bovenste whisker = 10% en 90% persentiel
-    """
     fig = go.Figure()
     
     for month_nr, month_name in enumerate(MAAND_NAMEN, 1):
