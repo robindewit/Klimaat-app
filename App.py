@@ -18,7 +18,7 @@ st.set_page_config(
 
 st.title("🌤️ ERA5 Klimaatstatistieken per Locatie")
 st.markdown("""
-Bekijk klimaatdata en statistieken voor een **specifieke locatie** (plaatsnaam of coördinaten) op basis van ERA5 reanalyse.
+Bekijk klimaatdata en maandelijkse verdelingen (met 50% en 90% percentielen) voor een **specifieke locatie** op basis van ERA5 reanalyse.
 """)
 
 # --- SESSIE STATUS EN LOCATIE ZOEKEN ---
@@ -88,7 +88,6 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
     temp_dir = tempfile.gettempdir()
     download_path = os.path.join(temp_dir, f"era5_point_{lat}_{lon}_{start_yr}_{end_yr}.nc")
 
-    # Bepaal een kleine box rond de puntlocatie (+/- 0.25 graden) om het rasterpunt op te halen
     area_box = [
         round(lat + 0.25, 2),
         round(lon - 0.25, 2),
@@ -114,10 +113,8 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
     }
 
     if not os.path.exists(download_path):
-        # JUISTE DATASET NAAM VOOR CDS API v2 / NEW CDS:
         c.retrieve("reanalysis-era5-single-levels-monthly-means", request, download_path)
 
-    # Openen en snijden naar het exacte dichtstbijzijnde punt
     ds = xr.open_dataset(download_path)
     lat_name = "latitude" if "latitude" in ds.coords else "lat"
     lon_name = "longitude" if "longitude" in ds.coords else "lon"
@@ -126,12 +123,13 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
     df = ds_point.to_dataframe().reset_index()
     ds.close()
 
-    # Tijdskolom opschonen
     time_col = next((t for t in ["valid_time", "time", "date"] if t in df.columns), None)
     df["time_clean"] = pd.to_datetime(df[time_col])
-    df["maand"] = df["time_clean"].dt.month
+    df["maand_nr"] = df["time_clean"].dt.month
+    df["maand_naam"] = df["maand_nr"].apply(lambda m: MAAND_NAMEN[m-1])
+    # Zorg dat de maanden chronologisch geordend blijven in Plotly
+    df["maand_naam"] = pd.Categorical(df["maand_naam"], categories=MAAND_NAMEN, ordered=True)
 
-    # Variabelen herleiden en berekenen
     cols_lower = {str(c).lower(): c for c in df.columns}
 
     # Temperatuur (°C)
@@ -167,6 +165,54 @@ def fetch_era5_point_data(lat, lon, start_yr, end_yr):
 
     return df
 
+# --- FUNCTIE VOOR CUSTOM PERCENTIEL BOXPLOT ---
+def create_percentile_boxplot(df, var_col, title, y_label, color_hex="#1f77b4"):
+    """
+    Maakt een Boxplot per maand waarin:
+    - De box de Mediaan (P50) en de P25-P75 range weergeeft
+    - De whiskers (snorharen) exact de P10 (10%) en P90 (90%) percentielen aangeven
+    """
+    fig = go.Figure()
+    
+    for month_nr, month_name in enumerate(MAAND_NAMEN, 1):
+        month_data = df[df["maand_nr"] == month_nr][var_col].dropna()
+        if len(month_data) == 0:
+            continue
+            
+        p10 = np.percentile(month_data, 10)
+        p25 = np.percentile(month_data, 25)
+        p50 = np.percentile(month_data, 50)
+        p75 = np.percentile(month_data, 75)
+        p90 = np.percentile(month_data, 90)
+        
+        fig.add_trace(go.Box(
+            name=month_name,
+            q1=[p25],
+            median=[p50],
+            q3=[p75],
+            lowerfence=[p10],
+            upperfence=[p90],
+            marker_color=color_hex,
+            showlegend=False,
+            hovertemplate=(
+                f"<b>{month_name}</b><br>" +
+                "90% Percentiel (P90): %{upperfence:.2f}<br>" +
+                "75% Percentiel (P75): %{q3:.2f}<br>" +
+                "<b>50% Percentiel (Mediaan/P50): %{median:.2f}</b><br>" +
+                "25% Percentiel (P25): %{q1:.2f}<br>" +
+                "10% Percentiel (P10): %{lowerfence:.2f}<extra></extra>"
+            )
+        ))
+        
+    fig.update_layout(
+        title=title,
+        yaxis_title=y_label,
+        xaxis_title="Maand",
+        height=450,
+        margin=dict(l=40, r=40, t=50, b=40)
+    )
+    return fig
+
 # --- HOOFDPROGRAMMA ---
 if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
     if start_jaar > eind_jaar:
@@ -177,73 +223,73 @@ if st.sidebar.button("🚀 Data Ophalen & Berekenen", type="primary"):
                 df = fetch_era5_point_data(lat, lon, start_jaar, eind_jaar)
                 st.success(f"Data succesvol geladen voor locatie Lat: {lat}, Lon: {lon} ({start_jaar}-{eind_jaar})")
 
-                # HELPER VOOR PERCENTIEL GRAFIEK
-                def plot_percentile_chart(df_data, var_col, title, y_label, color_hex="#1f77b4"):
-                    stats = df_data.groupby("maand")[var_col].agg(
-                        p10=lambda x: np.percentile(x.dropna(), 10) if len(x.dropna())>0 else np.nan,
-                        p50='median',
-                        p90=lambda x: np.percentile(x.dropna(), 90) if len(x.dropna())>0 else np.nan
-                    ).reset_index()
-                    stats["maand_naam"] = stats["maand"].apply(lambda m: MAAND_NAMEN[m-1])
+                # TABBLADEN MAKEN
+                tab_grafieken, tab_data = st.tabs([
+                    "📊 Klimaatstatistieken & Boxplots", 
+                    "📋 Ruwe Data & Exporteren"
+                ])
 
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=stats["maand_naam"], y=stats["p90"],
-                        mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=stats["maand_naam"], y=stats["p10"],
-                        mode='lines', line=dict(width=0),
-                        fill='tonexty', fillcolor='rgba(31, 119, 180, 0.2)',
-                        name='10% - 90% Percentiel Band'
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=stats["maand_naam"], y=stats["p50"],
-                        mode='lines+markers', line=dict(color=color_hex, width=3),
-                        name='Mediaan (P50)'
-                    ))
-                    fig.update_layout(title=title, yaxis_title=y_label, hovermode="x unified")
-                    return fig
+                # --- TAB 1: GRAFIEKEN ONDER ELKAAR ---
+                with tab_grafieken:
+                    st.info("💡 **Boxplot uitleg**: De dikke streep in de box is de **50% persentiel (mediaan)**. De bovenste en onderste snorharen geven exact de **90% en 10% persentielen** aan.")
 
-                # TABBLADEN VOOR RESULTATEN
-                tab1, tab2, tab3 = st.tabs(["🌡️ Temperatuur & Vocht", "💨 Wind", "🌀 Luchtdruk & Bewolking"])
+                    # 1. Temperatuur
+                    if "temp_c" in df.columns:
+                        fig_temp = create_percentile_boxplot(df, "temp_c", "2m Temperatuur (°C) per Maand", "Temperatuur (°C)", "#EF553B")
+                        st.plotly_chart(fig_temp, use_container_width=True)
+                        st.divider()
 
-                with tab1:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.plotly_chart(plot_percentile_chart(df, "temp_c", "2m Temperatuur (°C)", "Temperatuur (°C)", "#EF553B"), use_container_width=True)
-                    with c2:
-                        if "rh_pct" in df.columns:
-                            st.plotly_chart(plot_percentile_chart(df, "rh_pct", "Relatieve Vochtigheid (%)", "Vochtigheid (%)", "#00CC96"), use_container_width=True)
+                    # 2. Relatieve Vochtigheid
+                    if "rh_pct" in df.columns:
+                        fig_rh = create_percentile_boxplot(df, "rh_pct", "Relatieve Vochtigheid (%) per Maand", "Vochtigheid (%)", "#00CC96")
+                        st.plotly_chart(fig_rh, use_container_width=True)
+                        st.divider()
 
-                with tab2:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if "wind_speed_ms" in df.columns:
-                            st.plotly_chart(plot_percentile_chart(df, "wind_speed_ms", "Windsnelheid (m/s)", "Windsnelheid (m/s)", "#2CA02C"), use_container_width=True)
-                    with c2:
-                        st.subheader("Windrichting Verdeling")
-                        if "wind_dir_cardinal" in df.columns:
-                            wind_counts = df["wind_dir_cardinal"].value_counts().reset_index()
-                            wind_counts.columns = ["richting", "frequentie"]
-                            fig_rose = px.bar_polar(
-                                wind_counts, r="frequentie", theta="richting",
-                                template="plotly_dark", title="Windrichting Frequentie",
-                                color_discrete_sequence=px.colors.sequential.Plasma
-                            )
-                            st.plotly_chart(fig_rose, use_container_width=True)
+                    # 3. Windsnelheid
+                    if "wind_speed_ms" in df.columns:
+                        fig_wind = create_percentile_boxplot(df, "wind_speed_ms", "Windsnelheid (m/s) per Maand", "Windsnelheid (m/s)", "#2CA02C")
+                        st.plotly_chart(fig_wind, use_container_width=True)
+                        st.divider()
 
-                with tab3:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if "mslp_hpa" in df.columns:
-                            st.plotly_chart(plot_percentile_chart(df, "mslp_hpa", "Luchtdruk op Zeeniveau (hPa)", "Luchtdruk (hPa)", "#AB63FA"), use_container_width=True)
-                    with c2:
-                        if "tcc_pct" in df.columns:
-                            st.plotly_chart(plot_percentile_chart(df, "tcc_pct", "Totale Bewolkingsgraad (%)", "Bewolking (%)", "#FFA15A"), use_container_width=True)
+                    # 4. Windrichting frequentie
+                    if "wind_dir_cardinal" in df.columns:
+                        st.subheader("💨 Windrichting Verdeling")
+                        wind_counts = df["wind_dir_cardinal"].value_counts().reset_index()
+                        wind_counts.columns = ["richting", "frequentie"]
+                        fig_rose = px.bar_polar(
+                            wind_counts, r="frequentie", theta="richting",
+                            template="plotly_dark", title="Windrichting Frequentie (Totaal over gehele periode)",
+                            color_discrete_sequence=px.colors.sequential.Plasma
+                        )
+                        st.plotly_chart(fig_rose, use_container_width=True)
+                        st.divider()
 
-                st.subheader("📋 Ruwe Data (Eerste 24 maanden)")
-                st.dataframe(df[["time_clean", "temp_c", "wind_speed_ms", "wind_dir_cardinal", "mslp_hpa", "tcc_pct"]].head(24))
+                    # 5. Luchtdruk
+                    if "mslp_hpa" in df.columns:
+                        fig_msl = create_percentile_boxplot(df, "mslp_hpa", "Luchtdruk op Zeeniveau (hPa) per Maand", "Luchtdruk (hPa)", "#AB63FA")
+                        st.plotly_chart(fig_msl, use_container_width=True)
+                        st.divider()
+
+                    # 6. Bewolkingsgraad
+                    if "tcc_pct" in df.columns:
+                        fig_tcc = create_percentile_boxplot(df, "tcc_pct", "Totale Bewolkingsgraad (%) per Maand", "Bewolking (%)", "#FFA15A")
+                        st.plotly_chart(fig_tcc, use_container_width=True)
+
+                # --- TAB 2: RUWE DATA ---
+                with tab_data:
+                    st.subheader("📋 Ruwe Data Overzicht")
+                    
+                    display_cols = [c for c in ["time_clean", "temp_c", "rh_pct", "wind_speed_ms", "wind_dir_cardinal", "mslp_hpa", "tcc_pct"] if c in df.columns]
+                    st.dataframe(df[display_cols], use_container_width=True)
+                    
+                    # CSV Download Knop
+                    csv_data = df[display_cols].to_csv(index=False)
+                    st.download_button(
+                        label="💾 Download Alle Data als CSV",
+                        data=csv_data,
+                        file_name=f"era5_klimaatdata_{lat}_{lon}_{start_jaar}_{eind_jaar}.csv",
+                        mime="text/csv"
+                    )
 
             except Exception as e:
-                st.error(f"Er is een fout opgetreden: {e}")
+                st.error(f"Er is een fout opgetreden bij het ophalen/verwerken: {e}")
