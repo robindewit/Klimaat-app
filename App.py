@@ -17,21 +17,33 @@ st.set_page_config(
 
 # --- INSTELLINGEN & HELPERS ---
 def get_cds_client():
-    """Initialiseert de CDS API client via Streamlit Secrets of lokaal .cdsapirc bestand."""
-    try:
-        # Check eerst of de secrets aanwezig zijn op Streamlit Cloud / lokaal secrets.toml
-        if "cds" in st.secrets:
-            return cdsapi.Client(
-                url=st.secrets["cds"]["url"],
-                key=st.secrets["cds"]["key"]
-            )
-        # Indien geen secrets, valt cdsapi terug op het lokale ~/.cdsapirc bestand
-        return cdsapi.Client()
-    except Exception as e:
+    """Initialiseert de CDS API client via Streamlit Secrets op Streamlit Cloud."""
+    # 1. Controleer of Secrets aanwezig zijn in Streamlit Cloud
+    if "cds" not in st.secrets:
         st.error(
-            "❌ Kan geen verbinding maken met de CDS API. "
-            "Controleer of je Streamlit Secrets ([cds] url/key) of je `.cdsapirc` bestand juist ingesteld zijn."
+            "❌ Secrets '[cds]' niet gevonden in Streamlit Cloud. "
+            "Ga in Streamlit Cloud naar App Settings -> Secrets en voeg de [cds] url en key toe."
         )
+        st.stop()
+
+    url = st.secrets["cds"]["url"]
+    key = st.secrets["cds"]["key"]
+
+    # 2. Maak automatisch een .cdsapirc bestand aan in de home directory van de cloud container
+    home_dir = os.path.expanduser("~")
+    cdsapirc_path = os.path.join(home_dir, ".cdsapirc")
+
+    try:
+        with open(cdsapirc_path, "w", encoding="utf-8") as f:
+            f.write(f"url: {url}\nkey: {key}\n")
+    except Exception as e:
+        st.warning(f"Kon .cdsapirc niet wegschrijven naar home dir: {e}")
+
+    # 3. Initialiseer de CDS client met expliciete parameters
+    try:
+        return cdsapi.Client(url=url, key=key)
+    except Exception as e:
+        st.error(f"❌ Fout bij verbinden met Copernicus CDS API: {e}")
         st.stop()
 
 def ms_to_beaufort(ms):
