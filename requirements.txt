@@ -4,4 +4,7 @@ xarray>=2024.1.0
 netCDF4>=1.6.5
 numpy>=1.26
 pandas>=2.0
-plotly>=5.20
+plotly>=5.20,<6
+kaleido==0.2.1
+geopy>=2.4
+fpdf2>=2.7.9
