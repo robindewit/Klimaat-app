@@ -11,6 +11,7 @@ Bronnen
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -35,10 +36,11 @@ MONTHLY_GROUPS: dict[str, list[str]] = {
     "core": [
         "2m_temperature", "2m_dewpoint_temperature",
         "10m_u_component_of_wind", "10m_v_component_of_wind",
-        "total_precipitation", "total_evaporation",
+        "total_precipitation", "evaporation",
         "surface_solar_radiation_downwards",
     ],
-    "aviation": ["instantaneous_10m_wind_gust", "visibility", "cloud_base_height"],
+    # NB: "visibility" bestaat niet in de ERA5-maandgemiddelden (alleen in de uurdata)
+    "aviation": ["instantaneous_10m_wind_gust", "cloud_base_height"],
     "surface_expert": [
         "large_scale_precipitation", "convective_precipitation",
         "surface_latent_heat_flux", "surface_sensible_heat_flux",
@@ -80,6 +82,7 @@ class FetchBundle:
     pressure: xr.Dataset | None = None
     hourly: pd.DataFrame | None = None
     errors: dict[str, str] = field(default_factory=dict)
+    unavailable: list[str] = field(default_factory=list)  # variabelen die de dataset niet kent
 
 
 # --------------------------------------------------------------------------
@@ -117,6 +120,29 @@ def _download(dataset: str, request: dict, url: str, key: str) -> xr.Dataset:
             os.remove(tmp.name)
         except OSError:
             pass
+
+
+_AMBIGUOUS = re.compile(r"Ambiguous\s*:\s*([A-Za-z0-9_]+)\s+could be")
+
+
+def _download_dropping_unknown(dataset: str, request: dict, url: str, key: str) -> tuple[xr.Dataset, list[str]]:
+    """Download; variabelen die MARS niet kent ('Ambiguous') worden verwijderd en de aanvraag herhaald.
+
+    Returns:
+        (dataset, lijst met weggelaten variabelen)
+    """
+    dropped: list[str] = []
+    for _ in range(4):
+        try:
+            return _download(dataset, request, url, key), dropped
+        except Exception as exc:  # noqa: BLE001
+            variables = list(request["variable"])
+            bad = [b for b in _AMBIGUOUS.findall(str(exc)) if b in variables]
+            if not bad or len(bad) >= len(variables):
+                raise
+            request = {**request, "variable": [v for v in variables if v not in bad]}
+            dropped += bad
+    raise RuntimeError("Te veel onbekende variabelen in de aanvraag.")
 
 
 def _area(lat: float, lon: float) -> list[float]:
@@ -216,7 +242,7 @@ def _hourly_frame(ds: xr.Dataset) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 # Jobs (draaien in threads; geen Streamlit-aanroepen!)
 # --------------------------------------------------------------------------
-def _job_monthly(group: str, lat: float, lon: float, years: tuple[int, ...], url: str, key: str) -> xr.Dataset:
+def _job_monthly(group: str, lat: float, lon: float, years: tuple[int, ...], url: str, key: str) -> tuple[xr.Dataset, list[str]]:
     request = {
         "product_type": "monthly_averaged_reanalysis",
         "variable": MONTHLY_GROUPS[group],
@@ -227,7 +253,8 @@ def _job_monthly(group: str, lat: float, lon: float, years: tuple[int, ...], url
         "data_format": "netcdf",
         "download_format": "unarchived",
     }
-    return _select_point(_download(DATASET_MONTHLY, request, url, key), lat, lon)
+    ds, dropped = _download_dropping_unknown(DATASET_MONTHLY, request, url, key)
+    return _select_point(ds, lat, lon), dropped
 
 
 def _job_pressure(lat: float, lon: float, years: tuple[int, ...], url: str, key: str) -> xr.Dataset:
@@ -301,7 +328,9 @@ def fetch_bundle(lat: float, lon: float, years: tuple[int, ...], expert: bool) -
                 bundle.errors[name] = f"{type(exc).__name__}: {exc}"
                 continue
             if name.startswith("monthly:"):
-                monthly_parts.append(result)
+                ds_part, dropped = result
+                monthly_parts.append(ds_part)
+                bundle.unavailable += dropped
             elif name == "pressure":
                 bundle.pressure = result
             else:
