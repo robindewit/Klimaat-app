@@ -18,9 +18,8 @@ url = "https://cds.climate.copernicus.eu/api"
 key = "<JOUW-PERSONAL-ACCESS-TOKEN>"
 ```
 
-Je token vind je op https://cds.climate.copernicus.eu na het inloggen
-(profielpagina → *Personal Access Token*). Vergeet niet de licentie van de
-ERA5-dataset te accepteren op de datasetpagina.
+Je token vind je op https://cds.climate.copernicus.eu/profile na het inloggen.
+Accepteer ook de licentie van de ERA5-datasets op de datasetpagina's.
 """
 
 
@@ -30,24 +29,24 @@ def _fail(detail: str | None = None) -> NoReturn:
     st.stop()
 
 
-def get_cds_client() -> cdsapi.Client:
-    """Geef een geauthenticeerde ``cdsapi.Client`` terug.
-
-    Credentials worden uitgelezen uit ``st.secrets["cds"]["url"]`` en
-    ``st.secrets["cds"]["key"]``. Bij ontbrekende of placeholder-waarden wordt
-    een ``st.error()`` getoond en wordt de scriptrun gestopt.
-    """
+def get_cds_credentials() -> tuple[str, str]:
+    """Lees (url, key) uit ``st.secrets["cds"]``; toont een fout + stopt bij problemen."""
     try:
         url = str(st.secrets["cds"]["url"]).strip()
         key = str(st.secrets["cds"]["key"]).strip()
     except (KeyError, FileNotFoundError, AttributeError, TypeError) as exc:
-        # FileNotFoundError: er is geen secrets.toml gevonden.
         _fail(f"{type(exc).__name__}: {exc}")
 
-    if not url or not key or "<" in key or "JOUW" in key.upper():
+    placeholder = any(w in key.upper() for w in ("<", "JOUW", "PLAK"))
+    if not url or not key or placeholder:
         _fail("`url` en/of `key` is leeg of nog een placeholder.")
+    return url, key
 
+
+def get_cds_client() -> cdsapi.Client:
+    """Geef een geauthenticeerde ``cdsapi.Client`` terug."""
+    url, key = get_cds_credentials()
     try:
         return cdsapi.Client(url=url, key=key, quiet=True)
-    except Exception as exc:  # noqa: BLE001 - UI moet nooit crashen op setup
+    except Exception as exc:  # noqa: BLE001
         _fail(f"Client-initialisatie mislukt: {exc}")
