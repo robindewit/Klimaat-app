@@ -1,10 +1,12 @@
-"""Module 2: ERA5 maandgemiddelden ophalen, cachen en opschonen."""
+"""Module 2: ERA5 maandgemiddelden ophalen (alle parameters in één call), cachen en omrekenen."""
 from __future__ import annotations
 
 import os
 import tempfile
 import zipfile
+from dataclasses import dataclass
 
+import numpy as np
 import streamlit as st
 import xarray as xr
 
@@ -12,55 +14,53 @@ from utils.cds_client import get_cds_client
 
 DATASET_NAME = "reanalysis-era5-single-levels-monthly-means"
 PRODUCT_TYPE = "monthly_averaged_reanalysis"
-BBOX_MARGIN = 0.25  # graden; ERA5-grid is 0.25° dus ~1 gridpunt rondom
+BBOX_MARGIN = 0.25  # graden; ERA5-grid is 0.25°
 
-# Vriendelijke namen / aliassen -> officiële CDS-parameternamen.
-VARIABLE_MAP: dict[str, str] = {
-    "2m_temperature": "2m_temperature",
-    "2m_dewpoint_temperature": "2m_dewpoint_temperature",
-    "total_precipitation": "total_precipitation",
-    "10m_u_component_of_wind": "10m_u_component_of_wind",
-    "10m_v_component_of_wind": "10m_v_component_of_wind",
-    "surface_solar_radiation_downwards": "surface_solar_radiation_downwards",
-    "mean_sea_level_pressure": "mean_sea_level_pressure",
-    # Handige aliassen
-    "temperature": "2m_temperature",
-    "dewpoint": "2m_dewpoint_temperature",
-    "precipitation": "total_precipitation",
-    "wind_u": "10m_u_component_of_wind",
-    "wind_v": "10m_v_component_of_wind",
-    "solar_radiation": "surface_solar_radiation_downwards",
-    "pressure": "mean_sea_level_pressure",
-}
-
-# Korte NetCDF-variabelenamen die van Kelvin naar Celsius moeten.
-_KELVIN_SHORT_NAMES = ("t2m", "d2m")
+# Alle MVP-parameters die in één CDS-call worden opgevraagd.
+CDS_VARIABLES: list[str] = [
+    "2m_temperature",
+    "total_precipitation",
+    "10m_u_component_of_wind",
+    "10m_v_component_of_wind",
+    "surface_solar_radiation_downwards",
+    "mean_sea_level_pressure",
+]
 
 
-def _map_variables(variables: tuple[str, ...]) -> list[str]:
-    """Zet vriendelijke namen om naar CDS-parameternamen (ontdubbeld, op volgorde)."""
-    if not variables:
-        raise ValueError("Geef minimaal één variabele op.")
-    mapped: list[str] = []
-    for name in variables:
-        key = name.strip().lower()
-        if key not in VARIABLE_MAP:
-            raise ValueError(
-                f"Onbekende variabele '{name}'. Ondersteund: {sorted(VARIABLE_MAP)}"
-            )
-        cds_name = VARIABLE_MAP[key]
-        if cds_name not in mapped:
-            mapped.append(cds_name)
-    return mapped
+@dataclass(frozen=True)
+class ParameterInfo:
+    """Beschrijving van een weer te geven klimaatparameter (na omrekening)."""
+
+    key: str         # variabelenaam in de Dataset
+    tab_label: str   # tab-titel in de UI
+    title: str       # titel in grafieken/tabellen/PDF
+    unit: str        # eenheid na omrekening
+    note: str = ""   # toelichting
 
 
-def _build_request(
-    lat: float, lon: float, years: tuple[int, ...], variables: list[str]
-) -> dict:
-    """Stel het CDS-requestdictionary samen."""
+PARAMETERS: tuple[ParameterInfo, ...] = (
+    ParameterInfo("t2m", "Thermisch (°C)", "Temperatuur", "°C"),
+    ParameterInfo(
+        "tp", "Neerslag (mm)", "Neerslag", "mm/maand",
+        "Neerslag is de totale hoeveelheid per kalendermaand (ERA5-dagsom in m, omgerekend naar mm en vermenigvuldigd met het aantal dagen).",
+    ),
+    ParameterInfo(
+        "wind_speed", "Wind (m/s)", "Windsnelheid", "m/s",
+        "Windsnelheid is berekend als sqrt(u² + v²) uit de maandgemiddelde windcomponenten. Dit is de snelheid van de gemiddelde windvector en ligt lager dan de werkelijke gemiddelde windsnelheid.",
+    ),
+    ParameterInfo(
+        "ssrd", "Zonnestraling (J/m²)", "Zonnestraling", "J/m²/dag",
+        "Zonnestraling is de gemiddelde dagsom aan inkomende kortgolvige straling aan het oppervlak (J/m² per dag).",
+    ),
+    ParameterInfo("msl", "Luchtdruk (hPa)", "Luchtdruk", "hPa"),
+)
+
+
+def _build_request(lat: float, lon: float, years: tuple[int, ...]) -> dict:
+    """Stel het CDS-requestdictionary samen (alle variabelen tegelijk)."""
     return {
         "product_type": PRODUCT_TYPE,
-        "variable": variables,
+        "variable": CDS_VARIABLES,
         "year": [str(y) for y in sorted(set(years))],
         "month": [f"{m:02d}" for m in range(1, 13)],
         "time": "00:00",
@@ -71,18 +71,13 @@ def _build_request(
             round(lat - BBOX_MARGIN, 4),
             round(lon + BBOX_MARGIN, 4),
         ],
-        # Nieuwe CDS-API (2024+) gebruikt 'data_format' i.p.v. 'format'.
         "data_format": "netcdf",
         "download_format": "unarchived",
     }
 
 
 def _open_downloaded(path: str) -> xr.Dataset:
-    """Open het download (NetCDF of zip met NetCDF's), laad alles in het geheugen.
-
-    De nieuwe CDS levert soms een zip met meerdere .nc-bestanden (bv. wanneer
-    ERA5 en ERA5T gemengd worden). Die worden hier samengevoegd.
-    """
+    """Open de download (NetCDF of zip met NetCDF's) en laad alles in het geheugen."""
     if zipfile.is_zipfile(path):
         with tempfile.TemporaryDirectory() as tmpdir:
             with zipfile.ZipFile(path) as zf:
@@ -96,36 +91,46 @@ def _open_downloaded(path: str) -> xr.Dataset:
 
     ds = xr.open_dataset(path, engine="netcdf4")
     try:
-        return ds.load()  # volledig in geheugen
+        return ds.load()
     finally:
-        ds.close()  # file handle vrijgeven
+        ds.close()
 
 
-def _normalize(ds: xr.Dataset, lat: float, lon: float) -> xr.Dataset:
-    """Harmoniseer dimensies, kies gridpunt en converteer eenheden."""
-    # Nieuwe CDS gebruikt 'valid_time' i.p.v. 'time'.
+def _select_point(ds: xr.Dataset, lat: float, lon: float) -> xr.Dataset:
+    """Harmoniseer dimensies en kies het dichtstbijzijnde gridpunt."""
     if "valid_time" in ds.dims or "valid_time" in ds.coords:
         ds = ds.rename({"valid_time": "time"})
-
-    # ERA5 (expver=1) en ERA5T (expver=5) combineren indien aanwezig.
-    if "expver" in ds.dims:
+    if "expver" in ds.dims:  # ERA5 (1) en ERA5T (5) combineren
         ds = ds.sel(expver=1).combine_first(ds.sel(expver=5))
     ds = ds.drop_vars(["expver", "number"], errors="ignore")
 
-    # Longitude-conventie (0..360 vs -180..180) afstemmen.
-    target_lon = lon
-    if float(ds["longitude"].max()) > 180 and lon < 0:
-        target_lon = lon % 360
+    target_lon = lon % 360 if (float(ds["longitude"].max()) > 180 and lon < 0) else lon
+    return ds.sel(latitude=lat, longitude=target_lon, method="nearest")
 
-    ds = ds.sel(latitude=lat, longitude=target_lon, method="nearest")
 
-    # Kelvin -> Celsius (alleen als de eenheid nog 'K' is, voorkomt dubbele conversie).
-    for short in _KELVIN_SHORT_NAMES:
-        if short in ds.data_vars and ds[short].attrs.get("units", "K") == "K":
-            attrs = dict(ds[short].attrs)
-            ds[short] = ds[short] - 273.15
-            attrs["units"] = "°C"
-            ds[short].attrs = attrs
+def _convert_units(ds: xr.Dataset) -> xr.Dataset:
+    """Eenheidsconversies en afgeleide variabelen (windsnelheid)."""
+    ds = ds.copy()
+
+    if "t2m" in ds and ds["t2m"].attrs.get("units", "K") == "K":
+        ds["t2m"] = ds["t2m"] - 273.15  # Kelvin -> °C
+        ds["t2m"].attrs = {"units": "°C", "long_name": "2m temperatuur"}
+
+    if "tp" in ds and ds["tp"].attrs.get("units", "m") == "m":
+        # m per dag (maandgemiddelde) -> mm per maand
+        ds["tp"] = ds["tp"] * 1000.0 * ds["time"].dt.days_in_month
+        ds["tp"].attrs = {"units": "mm/maand", "long_name": "Totale neerslag"}
+
+    if "msl" in ds and ds["msl"].attrs.get("units", "Pa") == "Pa":
+        ds["msl"] = ds["msl"] / 100.0  # Pa -> hPa
+        ds["msl"].attrs = {"units": "hPa", "long_name": "Luchtdruk op zeeniveau"}
+
+    if "ssrd" in ds:
+        ds["ssrd"].attrs = {"units": "J/m²/dag", "long_name": "Zonnestraling"}
+
+    if "u10" in ds and "v10" in ds:
+        ds["wind_speed"] = np.hypot(ds["u10"], ds["v10"])  # sqrt(u² + v²)
+        ds["wind_speed"].attrs = {"units": "m/s", "long_name": "Windsnelheid (10 m)"}
     return ds
 
 
@@ -133,41 +138,35 @@ def _normalize(ds: xr.Dataset, lat: float, lon: float) -> xr.Dataset:
     ttl=86400,
     show_spinner="Data ophalen uit Copernicus Climate Data Store...",
 )
-def fetch_era5_monthly_data(
-    lat: float,
-    lon: float,
-    years: tuple[int, ...],
-    variables: tuple[str, ...],
-) -> xr.Dataset:
-    """Haal ERA5-maandgemiddelden op voor het dichtstbijzijnde gridpunt.
+def fetch_era5_monthly_data(lat: float, lon: float, years: tuple[int, ...]) -> xr.Dataset:
+    """Haal alle ERA5-parameters in één CDS-call op voor het dichtstbijzijnde gridpunt.
 
     Args:
-        lat: Breedtegraad in graden (-90..90).
-        lon: Lengtegraad in graden (-180..180).
-        years: Jaren, bv. ``(2020, 2021, 2022)``. Tuple i.v.m. cache-hashing.
-        variables: Vriendelijke of officiële CDS-variabelenamen (tuple).
+        lat: Breedtegraad (-90..90).
+        lon: Lengtegraad (-180..180).
+        years: Jaren, bv. ``(1991, ..., 2020)`` (tuple i.v.m. cache-hashing).
 
     Returns:
-        ``xr.Dataset`` met dimensie ``time`` voor het gekozen gridpunt.
-        Temperaturen (``t2m``, ``d2m``) staan in °C.
+        Dataset met dimensie ``time`` en de variabelen ``t2m`` (°C), ``tp``
+        (mm/maand), ``u10``, ``v10``, ``wind_speed`` (m/s), ``ssrd`` (J/m²/dag)
+        en ``msl`` (hPa).
     """
     if not -90 <= lat <= 90 or not -180 <= lon <= 180:
         raise ValueError("Coördinaten buiten bereik (lat -90..90, lon -180..180).")
     if not years:
         raise ValueError("Geef minimaal één jaar op.")
 
-    request = _build_request(lat, lon, years, _map_variables(variables))
+    request = _build_request(lat, lon, years)
     client = get_cds_client()
 
-    # Tijdelijk bestand; handle meteen sluiten (nodig op Windows) en door CDS laten vullen.
     tmp = tempfile.NamedTemporaryFile(suffix=".nc", delete=False)
-    tmp.close()
+    tmp.close()  # handle sluiten (nodig op Windows); CDS schrijft zelf het bestand
     try:
         client.retrieve(DATASET_NAME, request, tmp.name)
         ds = _open_downloaded(tmp.name)
-        return _normalize(ds, lat, lon)
+        return _convert_units(_select_point(ds, lat, lon))
     finally:
         try:
-            os.remove(tmp.name)  # cleanup, ook bij fouten
+            os.remove(tmp.name)
         except OSError:
             pass
