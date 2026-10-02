@@ -34,7 +34,7 @@ LAYERS = ["Laag 1 (0–7 cm)", "Laag 2 (7–28 cm)", "Laag 3 (28–100 cm)", "La
 ERROR_TEXT = {
     "hourly": "Uurdata (timeseries) niet beschikbaar: Tx/Tn, warmte-/vorstdagen, WBGT, windroos, windkans, windstoten (uurmax) en IDF ontbreken.",
     "monthly:core": "Basisparameters (temperatuur, dauwpunt, wind, neerslag, verdamping, zonnestraling) niet beschikbaar.",
-    "monthly:aviation": "Windstoten, zicht en wolkenhoogte niet beschikbaar.",
+    "monthly:aviation": "Windstoten en wolkenhoogte niet beschikbaar.",
     "monthly:surface_expert": "Neerslagopsplitsing, warmtefluxen, grenslaaghoogte, CAPE en CIN niet beschikbaar.",
     "monthly:soil": "Bodemvocht en bodemtemperatuur niet beschikbaar.",
     "pressure": "Verticale profielen (drukvlakken) niet beschikbaar.",
@@ -143,7 +143,7 @@ def run_analysis(mode: str, location: dict, period: tuple[int, int]) -> None:
     st.session_state["analysis"] = {
         "run_id": time.time(), "mode": mode, "location": location, "period": period,
         "grid": grid, "stats": stats, "profiles": profiles, "hourly": bundle.hourly,
-        "errors": errors, "hp_cache": {},
+        "errors": errors, "unavailable": bundle.unavailable, "hp_cache": {},
     }
     st.session_state.pop("pdf", None)
 
@@ -296,6 +296,9 @@ def section_solar(S: dict, H: dict, units: dict, thr: dict) -> list[dict]:
         items += _stat_items(convert_stats_df(S["cbh"], "cloud", cu), "Wolkenhoogte (basis)", cu)
         items.append(_note("Wolkenhoogte is een maandgemiddelde van de wolkenbasis; bij onbewolkte uren is de waarde niet gedefinieerd."))
     items += _stat_items(S.get("vis"), "Zicht", "km")
+    if "vis" not in S:
+        items.append(_note("Zicht (visibility) is niet beschikbaar in de ERA5-maandgemiddelden; alleen in de ruwe uurdata. "
+                           "Daarom ontbreekt zicht in deze tab en in de drempelkalender."))
     rows = _calendar_rows(S, H, thr)
     if rows:
         items.append(_fig(create_threshold_calendar(rows, "Drempelkalender (groen / oranje / rood op basis van P50)"),
@@ -454,6 +457,9 @@ def render_results(res: dict, cfg: dict) -> None:
         with st.expander("Technische details"):
             for k, v in res["errors"].items():
                 st.code(f"{k}: {v}")
+
+    if res.get("unavailable"):
+        st.info("Niet beschikbaar in ERA5-maandgemiddelden (weggelaten): " + ", ".join(res["unavailable"]))
 
     pdf_controls(res, sections, sig, "top", allow_generate=True)
     tabs = st.tabs([s["title"] for s in sections])
