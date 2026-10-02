@@ -3,3 +3,4 @@ cdsapi>=0.7.0
 xarray>=2024.1.0
 netCDF4>=1.6.5
 numpy>=1.26
+plotly>=5.20
