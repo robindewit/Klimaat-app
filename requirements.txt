@@ -1,12 +1,5 @@
-streamlit
-pandas
-numpy
-plotly
-xarray
-cdsapi
-geopy
-netcdf4
-h5netcdf
-scipy
-cfgrib
-eccodes
+streamlit>=1.32
+cdsapi>=0.7.0
+xarray>=2024.1.0
+netCDF4>=1.6.5
+numpy>=1.26
