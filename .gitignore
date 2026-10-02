@@ -1,1 +1,52 @@
+# --- Secrets & omgevingsvariabelen (NOOIT committen) ---
 .streamlit/secrets.toml
+secrets.toml
+.env
+.env.*
+*.pem
+*.key
+
+# --- CDS API / data ---
+.cdsapirc
+*.nc
+*.nc4
+*.grib
+*.grib2
+*.grb
+*.idx
+*.zip
+tmp/
+temp/
+data/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# --- Virtuele omgevingen ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Testen & tooling ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# --- Editors & OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
